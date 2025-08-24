@@ -1,8 +1,13 @@
 #pragma once
-#include <Arduino.h>
 
-void  hall_begin();
-long  hall_get_count();        // pulsos acumulados (relativo)
-int   hall_get_dir();          // +1 = abre, -1 = cierra, 0 = parado/indef.
-void  hall_reset();            // pone el contador a 0
-void  hall_tick(unsigned long now);
+void hall_begin();
+long hall_get_count();
+int  hall_get_dir();
+
+void hall_mark_closed();   // fija encCount = 0
+void hall_mark_open();     // fija límite superior = encCount actual (y lo guarda en NVS)
+
+void hall_tick(unsigned long now);
+
+// Límite superior configurable (se carga/guarda en NVS)
+extern long hall_open_pulses;

@@ -1,6 +1,7 @@
 #include "net.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <math.h>
 #include "secrets.h"
 #include "config.h"
 #include "logx.h"
@@ -53,7 +54,9 @@ static void handleCmd(const String& msg) {
                 "\",\"ip\":\"" + ip +
                 "\",\"ota\":\"" + (ota ? "ON" : "OFF") +
                 "\",\"left\":" + String(left) +
-                ",\"ilimit\":" + String(ilimit, 2) + "}";
+                ",\"ilimit\":" + String(ilimit, 2) +
+                ",\"open_pulses\":" + String(hall_open_pulses) + "}";
+
     net_mqtt_publish(TOPIC_INFO, st, false);
   }
   else if (msg == "reboot") {
@@ -89,31 +92,42 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (msg.equalsIgnoreCase("ON")) setEstado(CERRANDO);
     else                            setEstado(DETENIDO);
   }
-  // Nuevo: comando de límite (dashboard publica aquí)
   else if (t == TOPIC_ILIMIT_CMD) {
-      float nuevo = msg.toFloat();
-      if (nuevo > 0.0f && isfinite(nuevo)) {
-        float actual = current_get_limit();
-        if (fabs(actual - nuevo) > 0.01f) {
-          current_set_limit(nuevo);
-          logPrintf("[MQTT] Nuevo límite de corriente: %.2f A\n", nuevo);
-          publish_current_limit(); // solo publicamos cuando cambia
-        }
-      } else {
-        logPrintf("[MQTT] Valor de límite inválido: '%s'\n", msg.c_str());
+    float nuevo = msg.toFloat();
+    if (nuevo > 0.0f && isfinite(nuevo)) {
+      float actual = current_get_limit();
+      if (fabs(actual - nuevo) > 0.01f) {
+        current_set_limit(nuevo);
+        logPrintf("[MQTT] Nuevo límite de corriente: %.2f A\n", nuevo);
+        publish_current_limit();
       }
+    } else {
+      logPrintf("[MQTT] Valor de límite inválido: '%s'\n", msg.c_str());
+    }
   }
   else if (t == TOPIC_SPEED_CMD) {
     int nuevo = msg.toInt();
     if (nuevo >= 0 && nuevo <= 100) {
       int actual = motor_get_speed_target();
       if (actual != nuevo) {
-        motor_set_speed_target(nuevo);                          // cambia objetivo
-        net_mqtt_publish(TOPIC_SPEED, String(nuevo), true);     // estado (retained)
+        motor_set_speed_target(nuevo);                    // cambia objetivo base (persistirá)
+        net_mqtt_publish(TOPIC_SPEED, String(nuevo), true);
         logPrintf("[MQTT] Nueva velocidad objetivo: %d%%\n", nuevo);
       }
     } else {
       logPrintf("[MQTT] Valor de velocidad inválido: '%s'\n", msg.c_str());
+    }
+  }
+  else if (t == TOPIC_MARK_CLOSED_CMD) {
+    if (msg.equalsIgnoreCase("ON")) {
+      hall_mark_closed();
+      logPrintln("[MQTT] Marcado CERRADO en posición actual (encCount=0).");
+    }
+  }
+  else if (t == TOPIC_MARK_OPEN_CMD) {
+    if (msg.equalsIgnoreCase("ON")) {
+      hall_mark_open();
+      logPrintf("[MQTT] Marcado ABIERTO en posición actual (encCount=%ld).\n", hall_get_count());
     }
   }
 }
@@ -136,13 +150,16 @@ static bool mqttEnsureConnected() {
     mqtt.subscribe(TOPIC_CMD);
     mqtt.subscribe(TOPIC_OPEN_CMD);
     mqtt.subscribe(TOPIC_CLOSE_CMD);
-    mqtt.subscribe(TOPIC_ILIMIT_CMD);  // comandos del slider
-    mqtt.subscribe(TOPIC_ILIMIT);      // compatibilidad: permitir viejas UIs
+    mqtt.subscribe(TOPIC_ILIMIT_CMD);
+    mqtt.subscribe(TOPIC_ILIMIT);
     mqtt.subscribe(TOPIC_SPEED_CMD);
     mqtt.subscribe(TOPIC_SPEED);
+    mqtt.subscribe(TOPIC_MARK_CLOSED_CMD);
+    mqtt.subscribe(TOPIC_MARK_OPEN_CMD);
+
     net_mqtt_publish(TOPIC_INFO, String("{\"boot\":true}"), false);
-    net_mqtt_publish(TOPIC_SPEED, String(motor_get_speed()), true);
-    publish_current_limit();           // publica el estado del límite al conectar
+    net_mqtt_publish(TOPIC_SPEED, String(motor_get_speed_target()), true);
+    publish_current_limit();
     logx_on_mqtt_connected();
     return true;
   } else {
@@ -175,13 +192,11 @@ void net_tick() {
     tNextRetry = now + retryDelayMs;
   }
 
-  // -----------------------------
-  // 2) Solo si hay WiFi/MQTT
-  // -----------------------------
+  // Solo si hay WiFi/MQTT
   if (WiFi.status() == WL_CONNECTED) {
-    if (!ipShown) { 
-      ipShown = true; 
-      logPrintf("\n[WiFi] Conectado: %s\n", WiFi.localIP().toString().c_str()); 
+    if (!ipShown) {
+      ipShown = true;
+      logPrintf("\n[WiFi] Conectado: %s\n", WiFi.localIP().toString().c_str());
     }
     if (mqttEnsureConnected()) {
       mqtt.loop();
