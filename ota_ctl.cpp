@@ -43,3 +43,14 @@ void ota_tick() {
   if ((int32_t)(otaUntil - now) <= 0) { ota_disable(); return; }
   ArduinoOTA.handle();
 }
+
+bool ota_is_on() {
+  return otaOn;
+}
+
+uint32_t ota_seconds_left() {
+  if (!otaOn) return 0;
+  uint32_t now = millis();
+  if ((int32_t)(otaUntil - now) <= 0) return 0;
+  return (otaUntil - now) / 1000UL;
+}

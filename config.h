@@ -4,26 +4,56 @@
 #define INTERVALO_ESTADO_MS   0  // demo de rotación de estados (ms). Pon 0 para desactivarla
 #define BOOT_OTA_MINUTES      5     // Ventana OTA al arrancar (min). 0 = desactivada
 
-// ===== GPIOs =====
-#define RELAY_PIN        27
-#define RELAY_ACTIVE_LVL LOW
+// ===== Botón / entrada de relé =====
 #define BUTTON_PIN       14
+#define BUTTON_ACTIVE_LVL LOW // Nivel activo (LOW si contacto a masa)
+#define BUTTON_DEBOUNCE_MS 50  // Debounce botón (ms)
+
+// ===== Motor (IBT-2 BTS7960) =====
+#define MOTOR_RPWM_PIN     25
+#define MOTOR_LPWM_PIN     26
+#define MOTOR_REN_PIN      32
+#define MOTOR_LEN_PIN      33
+
+#define MOTOR_PWM_FREQ     1000     // Hz
+#define MOTOR_PWM_RES      8        // bits (0..255)
+#define MOTOR_DUTY_DEFAULT 255      // duty (≈78% del máximo)
+// ===== Motor (rampa) =====
+#define MOTOR_RAMP_STEP_PERCENT  5   // cambia 5% por tick
+#define MOTOR_TICK_MS            20  // llama motor_tick() cada 20 ms
+
+// ===== Hall encoder (A/B) =====
+// OJO: evita usar el 34 (lo tienes para ACS712). 35 y 36 son solo entrada -> perfectos.
+#define HALL_A_PIN  35
+#define HALL_B_PIN  36
+// Cuenta de referencia:
+//   - Al llegar a CERRADO pon a 0 (hall_mark_closed()).
+//   - Abrir suma pulsos (positivo). Cerrar resta.
+#define HALL_OPEN_PULSES      5000    // tope de "abierto" (ajústalo a tu puerta)
+#define HALL_STOP_DEBOUNCE_MS 80      // antirrebote de parada por hall
 
 // ===== Tópicos MQTT =====
-// --- Tópicos de envío de comandos al ESP32 ---
-// TOPIC_CMD:     Comandos generales ("ota on [min]", "ota off", "status", "reboot")
-#define TOPIC_CMD        "garage/door/cmd"
-// TOPIC_OPEN_CMD: Comando para abrir mientras se mantenga ON. Valores esperados: "ON" / "OFF"
-#define TOPIC_OPEN_CMD   "garage/door/open/cmd"
-// TOPIC_CLOSE_CMD: Comando para cerrar mientras se mantenga ON. Valores esperados: "ON" / "OFF"
-#define TOPIC_CLOSE_CMD  "garage/door/close/cmd"
 
-// --- Tópicos de información publicados por el ESP32 ---
-// TOPIC_STATE:   Estado actual de la puerta ("ABRIENDO", "CERRANDO", "DETENIDO"). Retained
-#define TOPIC_STATE      "garage/door/state"     // retained
-// TOPIC_LOG:     Mensajes de log en texto plano
-#define TOPIC_LOG        "garage/door/log"
-// TOPIC_INFO:    Información de red, IP y estado de conexión en JSON
-#define TOPIC_INFO       "garage/door/info"
-// TOPIC_OTA:     Estado OTA actual ("ON"/"OFF"). Retained
-#define TOPIC_OTA        "garage/door/ota"      // retained (ON/OFF)
+// --- Comandos al ESP32 ---
+#define TOPIC_CMD        "garage/door/cmd"          // comandos generales ("ota on", "ota off", "status", "reboot")
+#define TOPIC_OPEN_CMD   "garage/door/open/cmd"     // abrir mientras ON
+#define TOPIC_CLOSE_CMD  "garage/door/close/cmd"    // cerrar mientras ON
+
+// --- Información desde el ESP32 ---
+#define TOPIC_STATE      "garage/door/state"        // estado ("ABRIENDO", "CERRANDO", "DETENIDO"), retained
+#define TOPIC_LOG        "garage/door/log"          // logs
+#define TOPIC_INFO       "garage/door/info"         // info de red, JSON
+#define TOPIC_OTA        "garage/door/ota"          // estado OTA, retained ("ON"/"OFF")
+
+// --- Corriente (ACS712) ---
+#define TOPIC_ILIMIT      "garage/current/limit"    // Estado (retained): valor actual del límite (A)
+#define TOPIC_ILIMIT_CMD  "garage/current/limit/cmd"// Comando: el dashboard publica aquí el nuevo valor solicitado
+#define TOPIC_IMEAS       "garage/current/value"    // Medida en tiempo real (A)
+
+#define TOPIC_SPEED        "garage/motor/speed"       // estado actual (retained)
+#define TOPIC_SPEED_CMD    "garage/motor/speed/cmd"   // comandos desde dashboard
+
+// Publicación de posición del encoder (pulsos relativos desde reset/arranque)
+#define TOPIC_ENC_POS   "garage/encoder/pos"    // estado (retained opcional, aquí no)
+#define TOPIC_ENC_DIR   "garage/encoder/dir"    // "1" hacia abrir, "-1" hacia cerrar
+

@@ -5,8 +5,10 @@
 #include "config.h"
 #include "logx.h"
 #include "ota_ctl.h"
+#include "state.h"
+#include "current.h"
 #include "motor.h"
-#include "display_ctl.h"  // nuevo para mostrar en pantalla
+#include "hall.h"
 
 // WiFi reconexión con backoff
 static bool     ipShown      = false;
@@ -27,11 +29,6 @@ void net_mqtt_publish(const char* topic, const String& payload, bool retain) {
   mqtt.publish(topic, payload.c_str(), retain);
 }
 
-static void setAndReportState(const char* state) {
-  net_mqtt_publish(TOPIC_STATE, String(state), true);
-  display_show_state(state); // actualiza el texto en la pantalla
-}
-
 static void handleCmd(const String& msg) {
   if (msg.startsWith("ota on")) {
     uint32_t minutos = 10;
@@ -48,8 +45,15 @@ static void handleCmd(const String& msg) {
   }
   else if (msg == "status") {
     String ip = net_wifi_connected() ? WiFi.localIP().toString() : "-";
-    String st = String("{\"wifi\":\"") + (net_wifi_connected()?"ON":"OFF") +
-                "\",\"ip\":\"" + ip + "\"}";
+    bool ota = ota_is_on();
+    uint32_t left = ota_seconds_left();
+    float ilimit = current_get_limit();
+
+    String st = String("{\"wifi\":\"") + (net_wifi_connected() ? "ON" : "OFF") +
+                "\",\"ip\":\"" + ip +
+                "\",\"ota\":\"" + (ota ? "ON" : "OFF") +
+                "\",\"left\":" + String(left) +
+                ",\"ilimit\":" + String(ilimit, 2) + "}";
     net_mqtt_publish(TOPIC_INFO, st, false);
   }
   else if (msg == "reboot") {
@@ -57,25 +61,14 @@ static void handleCmd(const String& msg) {
     delay(100);
     ESP.restart();
   }
-  else if (msg == "open_on") {
-    motorOpen();
-    setAndReportState("ABRIENDO");
-  }
-  else if (msg == "open_off") {
-    motorStop();
-    setAndReportState("DETENIDO");
-  }
-  else if (msg == "close_on") {
-    motorClose();
-    setAndReportState("CERRANDO");
-  }
-  else if (msg == "close_off") {
-    motorStop();
-    setAndReportState("DETENIDO");
-  }
   else {
-    logPrintln("[MQTT] Comando no reconocido.");
+    logPrintln("[MQTT] Comando no reconocido en TOPIC_CMD.");
   }
+}
+
+// Publica el límite actual en el topic de estado (retained)
+static void publish_current_limit() {
+  net_mqtt_publish(TOPIC_ILIMIT, String(current_get_limit(), 2), true);
 }
 
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -89,21 +82,38 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     handleCmd(msg);
   }
   else if (t == TOPIC_OPEN_CMD) {
-    if (msg == "ON") {
-      motorOpen();
-      setAndReportState("ABRIENDO");
-    } else {
-      motorStop();
-      setAndReportState("DETENIDO");
-    }
+    if (msg.equalsIgnoreCase("ON")) setEstado(ABRIENDO);
+    else                            setEstado(DETENIDO);
   }
   else if (t == TOPIC_CLOSE_CMD) {
-    if (msg == "ON") {
-      motorClose();
-      setAndReportState("CERRANDO");
+    if (msg.equalsIgnoreCase("ON")) setEstado(CERRANDO);
+    else                            setEstado(DETENIDO);
+  }
+  // Nuevo: comando de límite (dashboard publica aquí)
+  else if (t == TOPIC_ILIMIT_CMD) {
+      float nuevo = msg.toFloat();
+      if (nuevo > 0.0f && isfinite(nuevo)) {
+        float actual = current_get_limit();
+        if (fabs(actual - nuevo) > 0.01f) {
+          current_set_limit(nuevo);
+          logPrintf("[MQTT] Nuevo límite de corriente: %.2f A\n", nuevo);
+          publish_current_limit(); // solo publicamos cuando cambia
+        }
+      } else {
+        logPrintf("[MQTT] Valor de límite inválido: '%s'\n", msg.c_str());
+      }
+  }
+  else if (t == TOPIC_SPEED_CMD) {
+    int nuevo = msg.toInt();
+    if (nuevo >= 0 && nuevo <= 100) {
+      int actual = motor_get_speed_target();
+      if (actual != nuevo) {
+        motor_set_speed_target(nuevo);                          // cambia objetivo
+        net_mqtt_publish(TOPIC_SPEED, String(nuevo), true);     // estado (retained)
+        logPrintf("[MQTT] Nueva velocidad objetivo: %d%%\n", nuevo);
+      }
     } else {
-      motorStop();
-      setAndReportState("DETENIDO");
+      logPrintf("[MQTT] Valor de velocidad inválido: '%s'\n", msg.c_str());
     }
   }
 }
@@ -126,7 +136,13 @@ static bool mqttEnsureConnected() {
     mqtt.subscribe(TOPIC_CMD);
     mqtt.subscribe(TOPIC_OPEN_CMD);
     mqtt.subscribe(TOPIC_CLOSE_CMD);
+    mqtt.subscribe(TOPIC_ILIMIT_CMD);  // comandos del slider
+    mqtt.subscribe(TOPIC_ILIMIT);      // compatibilidad: permitir viejas UIs
+    mqtt.subscribe(TOPIC_SPEED_CMD);
+    mqtt.subscribe(TOPIC_SPEED);
     net_mqtt_publish(TOPIC_INFO, String("{\"boot\":true}"), false);
+    net_mqtt_publish(TOPIC_SPEED, String(motor_get_speed()), true);
+    publish_current_limit();           // publica el estado del límite al conectar
     logx_on_mqtt_connected();
     return true;
   } else {
@@ -151,6 +167,7 @@ void net_begin() {
 void net_tick() {
   uint32_t now = millis();
 
+  // WiFi reconexión
   if (WiFi.status() != WL_CONNECTED && now >= tNextRetry) {
     logPrint(".");
     WiFi.reconnect();
@@ -158,9 +175,42 @@ void net_tick() {
     tNextRetry = now + retryDelayMs;
   }
 
+  // -----------------------------
+  // 2) Solo si hay WiFi/MQTT
+  // -----------------------------
   if (WiFi.status() == WL_CONNECTED) {
-    if (!ipShown) { ipShown = true; logPrintf("\n[WiFi] Conectado: %s\n", WiFi.localIP().toString().c_str()); }
-    if (mqttEnsureConnected()) mqtt.loop();
+    if (!ipShown) { 
+      ipShown = true; 
+      logPrintf("\n[WiFi] Conectado: %s\n", WiFi.localIP().toString().c_str()); 
+    }
+    if (mqttEnsureConnected()) {
+      mqtt.loop();
+
+      // Publicar corriente cada 2s
+      static uint32_t tLastCurrent = 0;
+      if (now - tLastCurrent >= 2000) {
+        float I = current_readA();
+        net_mqtt_publish(TOPIC_IMEAS, String(I, 2), false);
+        tLastCurrent = now;
+      }
+
+      // Rampa de velocidad
+      static uint32_t tLastMotor = 0;
+      if (now - tLastMotor >= MOTOR_TICK_MS) {
+        motor_tick();
+        tLastMotor = now;
+      }
+
+      // Encoder cada 500 ms
+      static uint32_t tLastEnc = 0;
+      if (now - tLastEnc >= 500) {
+        long pos = hall_get_count();
+        int  dir = hall_get_dir();
+        net_mqtt_publish(TOPIC_ENC_POS, String(pos), false);
+        net_mqtt_publish(TOPIC_ENC_DIR, String(dir), false);
+        tLastEnc = now;
+      }
+    }
   } else {
     ipShown = false;
   }
