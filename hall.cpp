@@ -7,9 +7,13 @@
 
 static Preferences prefsHall;
 
+static bool hall_enabled = (HALL_ENABLED_DEFAULT != 0);
+
+void hall_set_enabled(bool on) { hall_enabled = on; }
+bool hall_is_enabled()         { return hall_enabled; }
+
 static volatile long encCount = 0;
 static volatile int  encDir   = 0;    // +1 abrir, -1 cerrar
-static uint8_t lastAB = 0;
 
 // valor configurable en NVS
 long hall_open_pulses = HALL_OPEN_PULSES_DEFAULT;
@@ -21,42 +25,30 @@ static const char* KEY_LAST_END  = "last_end";
 
 enum LastEndstop : uint8_t { END_UNKNOWN=0, END_CLOSED=1, END_OPEN=2 };
 
-IRAM_ATTR static void isr_update() {
-  uint8_t a = (uint8_t)digitalRead(HALL_A_PIN);
-  uint8_t b = (uint8_t)digitalRead(HALL_B_PIN);
-  uint8_t ab = (a << 1) | b;
-
-  int delta = 0;
-  uint8_t prev = lastAB;
-  if (prev == 0b00) { if (ab == 0b01) delta = +1; else if (ab == 0b10) delta = -1; }
-  else if (prev == 0b01) { if (ab == 0b11) delta = +1; else if (ab == 0b00) delta = -1; }
-  else if (prev == 0b11) { if (ab == 0b10) delta = +1; else if (ab == 0b01) delta = -1; }
-  else if (prev == 0b10) { if (ab == 0b00) delta = +1; else if (ab == 0b11) delta = -1; }
-
-  if (delta != 0) {
-    encCount += delta;
-    encDir = (delta > 0) ? +1 : -1;
-    lastAB = ab;
-  } else {
-    lastAB = ab;
-  }
+// ISR para el pin de PULSOS
+IRAM_ATTR static void isr_pulse() {
+  int dirLevel = digitalRead(HALL_DIR_PIN);
+#if HALL_DIR_ACTIVE_HIGH_CLOSE
+  encDir = (dirLevel ? -1 : +1);
+#else
+  encDir = (dirLevel ? +1 : -1);
+#endif
+  encCount += encDir;
 }
 
 void hall_begin() {
   prefsHall.begin(NVS_NS_HALL, false);
   hall_open_pulses = prefsHall.getLong(KEY_OPEN_PLS, HALL_OPEN_PULSES_DEFAULT);
 
-  // Si el último estado fue un final fiable, restaura la posición al extremo
+  // Restaurar último extremo si lo había
   uint8_t lastEnd = prefsHall.getUChar(KEY_LAST_END, END_UNKNOWN);
   if (lastEnd == END_CLOSED)      encCount = 0;
   else if (lastEnd == END_OPEN)   encCount = hall_open_pulses;
-  // else UNKNOWN -> dejamos encCount en 0 por seguridad, pero no lo consideramos fiable
 
-  pinMode(HALL_A_PIN, INPUT); // si el sensor es 5V, usa divisores a 3.3V
-  pinMode(HALL_B_PIN, INPUT);
-  lastAB = ((uint8_t)digitalRead(HALL_A_PIN) << 1) | (uint8_t)digitalRead(HALL_B_PIN);
-  attachInterrupt(digitalPinToInterrupt(HALL_A_PIN), isr_update, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(HALL_B_PIN), isr_update, CHANGE);
+  pinMode(HALL_PULSE_PIN, INPUT);
+  pinMode(HALL_DIR_PIN, INPUT);
+
+  attachInterrupt(digitalPinToInterrupt(HALL_PULSE_PIN), isr_pulse, RISING);
 }
 
 long hall_get_count() { return encCount; }
@@ -64,20 +56,15 @@ int  hall_get_dir()   { return encDir; }
 
 void hall_mark_closed() {
   encCount = 0;
-  // Guardar que el último final alcanzado es CERRADO
   prefsHall.putUChar(KEY_LAST_END, END_CLOSED);
 }
 
 void hall_mark_open() {
-  // Tomar la posición actual como límite superior y persistir
   hall_open_pulses = encCount;
   prefsHall.putLong(KEY_OPEN_PLS, hall_open_pulses);
-  // Guardar que el último final alcanzado es ABIERTO
   prefsHall.putUChar(KEY_LAST_END, END_OPEN);
 }
 
-// Parada local por finales "virtuales" de Hall, SIN depender de WiFi/MQTT.
-// Además activa modo lento al inicio y al final del recorrido.
 void hall_tick(unsigned long now) {
   static unsigned long tLastStop = 0;
 
@@ -86,13 +73,12 @@ void hall_tick(unsigned long now) {
       setEstado(DETENIDO);
       tLastStop = now;
 
-      // Si paramos en extremos, persistimos "last_endstop"
       if (encCount <= 0) {
         prefsHall.putUChar(KEY_LAST_END, END_CLOSED);
-        encCount = 0; // clamp
+        encCount = 0;
       } else if (encCount >= hall_open_pulses) {
         prefsHall.putUChar(KEY_LAST_END, END_OPEN);
-        encCount = hall_open_pulses; // clamp
+        encCount = hall_open_pulses;
       }
     }
   };
@@ -102,8 +88,8 @@ void hall_tick(unsigned long now) {
   const long slowThreshPulses = (total * HALL_SLOWDOWN_THRESHOLD_PERCENT) / 100;
 
   auto nearEitherEnd = [&](long pos){
-    long distToClosed = pos;          // distancia a 0
-    long distToOpen   = total - pos;  // distancia a total
+    long distToClosed = pos;
+    long distToOpen   = total - pos;
     long dmin = (distToClosed < distToOpen) ? distToClosed : distToOpen;
     return dmin <= slowThreshPulses;
   };
@@ -124,7 +110,7 @@ void hall_tick(unsigned long now) {
 
       if (c <= 0) {
         tryStop("[HALL] tope de CERRADO");
-        hall_mark_closed(); // asegúrate de quedarte en 0
+        hall_mark_closed();
       }
     } break;
 

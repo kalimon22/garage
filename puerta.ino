@@ -98,8 +98,11 @@ void loop() {
     // Botón local siempre
   handleButton(ahora);
 
-  // Seguridad Hall siempre
-  //hall_tick(ahora);
+
+  // Hall (aplica o no según flag)
+  if (hall_is_enabled()) {
+    hall_tick(ahora);
+  }
 
   // 4) Red (Wi-Fi/MQTT)
   net_tick();
