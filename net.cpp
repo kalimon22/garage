@@ -10,12 +10,22 @@
 #include "current.h"
 #include "motor.h"
 #include "hall.h"
+#include "light.h"
 
-// WiFi reconexión con backoff
+// ==============================
+// WiFi: reconexión con backoff
+// ==============================
 static bool ipShown = false;
 static uint32_t tNextRetry = 0;
 static uint32_t retryDelayMs = 1000;
 static const uint32_t RETRY_DELAY_MAX = 60 * 1000;
+
+// ==================================
+// MQTT: reconexión NO bloqueante
+// ==================================
+static uint32_t tNextMqttRetry = 0;
+static uint32_t mqttRetryDelayMs = 1000;
+static const uint32_t MQTT_RETRY_DELAY_MAX = 60 * 1000; // 60s
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
@@ -56,7 +66,12 @@ static void handleCmd(const String &msg) {
     uint32_t left = ota_seconds_left();
     float ilimit = current_get_limit();
 
-    String st = String("{\"wifi\":\"") + (net_wifi_connected() ? "ON" : "OFF") + "\",\"ip\":\"" + ip + "\",\"ota\":\"" + (ota ? "ON" : "OFF") + "\",\"left\":" + String(left) + ",\"ilimit\":" + String(ilimit, 2) + ",\"open_pulses\":" + String(hall_open_pulses) + "}";
+    String st = String("{\"wifi\":\"") + (net_wifi_connected() ? "ON" : "OFF")
+              + "\",\"ip\":\"" + ip
+              + "\",\"ota\":\"" + (ota ? "ON" : "OFF")
+              + "\",\"left\":" + String(left)
+              + ",\"ilimit\":" + String(ilimit, 2)
+              + ",\"open_pulses\":" + String(hall_open_pulses) + "}";
 
     net_mqtt_publish(TOPIC_INFO, st, false);
   } else if (msg == "reboot") {
@@ -73,6 +88,34 @@ static void publish_current_limit() {
   net_mqtt_publish(TOPIC_ILIMIT, String(current_get_limit(), 2), true);
 }
 
+static void mqttSubscribeAll() {
+  mqtt.subscribe(TOPIC_CMD);
+  mqtt.subscribe(TOPIC_OPEN_CMD);
+  mqtt.subscribe(TOPIC_CLOSE_CMD);
+  mqtt.subscribe(TOPIC_ILIMIT_CMD);
+  mqtt.subscribe(TOPIC_ILIMIT);
+  mqtt.subscribe(TOPIC_SPEED_CMD);
+  mqtt.subscribe(TOPIC_SPEED);
+  mqtt.subscribe(TOPIC_MARK_CLOSED_CMD);
+  mqtt.subscribe(TOPIC_MARK_OPEN_CMD);
+  mqtt.subscribe(TOPIC_HALL_EN_CMD);
+  mqtt.subscribe(TOPIC_LIGHT_CMD);
+  mqtt.subscribe(TOPIC_LIGHT_DIM_CMD);
+  mqtt.subscribe(TOPIC_LIGHT_BREATH_CMD);
+}
+
+static void mqttPublishBootState() {
+  net_mqtt_publish(TOPIC_LIGHT_STATE, light_is_on() ? "ON" : "OFF", true);
+#if LIGHT_PWM_ENABLED
+  net_mqtt_publish(TOPIC_LIGHT_DIM, String(light_get_level()), true);
+#endif
+  net_mqtt_publish(TOPIC_HALL_EN_STATE, hall_is_enabled() ? "ON" : "OFF", true);
+  net_mqtt_publish(TOPIC_INFO, String("{\"boot\":true}"), false);
+  net_mqtt_publish(TOPIC_SPEED, String(motor_get_speed_target()), true);
+  publish_current_limit();
+  logx_on_mqtt_connected();
+}
+
 static void mqttCallback(char *topic, byte *payload, unsigned int length) {
   String t(topic);
   String msg;
@@ -84,16 +127,19 @@ static void mqttCallback(char *topic, byte *payload, unsigned int length) {
   if (t == TOPIC_CMD) {
     logPrintf("[MQTT] cmd: %s\n", msg.c_str());
     handleCmd(msg);
+
   } else if (t == TOPIC_OPEN_CMD) {
     if (msg.equalsIgnoreCase("ON"))
       setEstado(ABRIENDO);
     else
       setEstado(DETENIDO);
+
   } else if (t == TOPIC_CLOSE_CMD) {
     if (msg.equalsIgnoreCase("ON"))
       setEstado(CERRANDO);
     else
       setEstado(DETENIDO);
+
   } else if (t == TOPIC_ILIMIT_CMD) {
     float nuevo = msg.toFloat();
     if (nuevo > 0.0f && isfinite(nuevo)) {
@@ -106,6 +152,7 @@ static void mqttCallback(char *topic, byte *payload, unsigned int length) {
     } else {
       logPrintf("[MQTT] Valor de límite inválido: '%s'\n", msg.c_str());
     }
+
   } else if (t == TOPIC_SPEED_CMD) {
     int nuevo = msg.toInt();
     if (nuevo >= 0 && nuevo <= 100) {
@@ -118,16 +165,19 @@ static void mqttCallback(char *topic, byte *payload, unsigned int length) {
     } else {
       logPrintf("[MQTT] Valor de velocidad inválido: '%s'\n", msg.c_str());
     }
+
   } else if (t == TOPIC_MARK_CLOSED_CMD) {
     if (msg.equalsIgnoreCase("ON")) {
       hall_mark_closed();
       logPrintln("[MQTT] Marcado CERRADO en posición actual (encCount=0).");
     }
+
   } else if (t == TOPIC_MARK_OPEN_CMD) {
     if (msg.equalsIgnoreCase("ON")) {
       hall_mark_open();
       logPrintf("[MQTT] Marcado ABIERTO en posición actual (encCount=%ld).\n", hall_get_count());
     }
+
   } else if (t == TOPIC_HALL_EN_CMD) {
     if (msg.equalsIgnoreCase("ON")) {
       hall_set_enabled(true);
@@ -138,17 +188,62 @@ static void mqttCallback(char *topic, byte *payload, unsigned int length) {
       net_mqtt_publish(TOPIC_HALL_EN_STATE, "OFF", true);
       logPrintln("[HALL] enabled=OFF");
     }
+
+  } else if (t == TOPIC_LIGHT_CMD) {
+    if (msg.equalsIgnoreCase("ON")) light_on();
+    else if (msg.equalsIgnoreCase("OFF")) light_off();
+    else if (msg.equalsIgnoreCase("TOGGLE")) light_toggle();
+    net_mqtt_publish(TOPIC_LIGHT_STATE, light_is_on() ? "ON" : "OFF", true);
+
+  } else if (t == TOPIC_LIGHT_BREATH_CMD) {
+    if (msg.equalsIgnoreCase("ON")) {
+      // Respiración en reposo con el nivel actual (override de usuario)
+      light_set_breath_mode(true);
+    } else if (msg.equalsIgnoreCase("OFF")) {
+      light_set_breath_mode(false);
+    }
+    net_mqtt_publish(TOPIC_LIGHT_BREATH_STATE, light_get_breath_mode() ? "ON" : "OFF", true);
+
+  } else if (t == TOPIC_LIGHT_DIM_CMD) {
+    // Acepta 0..100 (%) o 0..(2^RES - 1) según configuración
+#if LIGHT_PWM_ENABLED
+    bool isPercent = (msg.endsWith("%"));
+    long v = msg.toInt();
+    if (isPercent) {
+      if (v < 0) v = 0;
+      if (v > 100) v = 100;
+      light_set_percent((uint8_t)v);      // marca override internamente
+    } else {
+      if (v < 0) v = 0;
+      long vmax = (long)((1U << LIGHT_PWM_RES_BITS) - 1);
+      if (v > vmax) v = vmax;
+      light_set_level((uint16_t)v);       // marca override internamente
+    }
+    net_mqtt_publish(TOPIC_LIGHT_DIM, String(light_get_level()), true);
+    if (!light_is_on() && light_get_level() > 0) {
+      light_on(); // enciende si estaba apagada
+      net_mqtt_publish(TOPIC_LIGHT_STATE, "ON", true);
+    }
+#else
+    logPrintln("[LIGHT] PWM deshabilitado; usa ON/OFF.");
+#endif
   }
 }
 
+// =======================================
+// Conexión MQTT con reintento no bloqueante
+// =======================================
 static bool mqttEnsureConnected() {
   if (!net_wifi_connected())
     return false;
   if (mqtt.connected())
     return true;
 
-  mqtt.setServer(mqtt_host, mqtt_port);
-  mqtt.setCallback(mqttCallback);
+  uint32_t now = millis();
+  if (now < tNextMqttRetry) {
+    // Aún no toca reintentar
+    return false;
+  }
 
   String clientId = String("esp32-garaje-") + String((uint32_t)ESP.getEfuseMac(), HEX);
   logPrint("[MQTT] Conectando...");
@@ -160,25 +255,19 @@ static bool mqttEnsureConnected() {
 
   if (ok) {
     logPrintln(" OK");
-    mqtt.subscribe(TOPIC_CMD);
-    mqtt.subscribe(TOPIC_OPEN_CMD);
-    mqtt.subscribe(TOPIC_CLOSE_CMD);
-    mqtt.subscribe(TOPIC_ILIMIT_CMD);
-    mqtt.subscribe(TOPIC_ILIMIT);
-    mqtt.subscribe(TOPIC_SPEED_CMD);
-    mqtt.subscribe(TOPIC_SPEED);
-    mqtt.subscribe(TOPIC_MARK_CLOSED_CMD);
-    mqtt.subscribe(TOPIC_MARK_OPEN_CMD);
-    mqtt.subscribe(TOPIC_HALL_EN_CMD);
+    // Reset del backoff
+    mqttRetryDelayMs = 1000;
+    tNextMqttRetry = 0;
 
-    net_mqtt_publish(TOPIC_HALL_EN_STATE, hall_is_enabled() ? "ON" : "OFF", true);
-    net_mqtt_publish(TOPIC_INFO, String("{\"boot\":true}"), false);
-    net_mqtt_publish(TOPIC_SPEED, String(motor_get_speed_target()), true);
-    publish_current_limit();
-    logx_on_mqtt_connected();
+    // Suscripciones y estado inicial
+    mqttSubscribeAll();
+    mqttPublishBootState();
     return true;
   } else {
     logPrintf(" fallo (%d)\n", mqtt.state());
+    // Programa próximo intento con backoff exponencial
+    mqttRetryDelayMs = (mqttRetryDelayMs < MQTT_RETRY_DELAY_MAX) ? (mqttRetryDelayMs * 2) : MQTT_RETRY_DELAY_MAX;
+    tNextMqttRetry = now + mqttRetryDelayMs;
     return false;
   }
 }
@@ -193,6 +282,13 @@ void net_begin() {
   WiFi.begin(ssid, password);
   retryDelayMs = 1000;
   tNextRetry = millis() + retryDelayMs;
+
+  // Configuración MQTT para minimizar bloqueos
+  mqtt.setServer(mqtt_host, mqtt_port);
+  mqtt.setCallback(mqttCallback);
+  mqtt.setKeepAlive(10);     // keepalive corto para detectar caídas antes
+  mqtt.setSocketTimeout(1);  // 1s de timeout de socket (evita bloqueos largos)
+
   logPrintln("[WiFi] Conectando...");
 }
 
@@ -224,7 +320,9 @@ void net_tick() {
   // c) Guardia de sobrecorriente (local)
   static uint32_t tLastIcheck = 0;
   static bool overIEvent = false;  // para avisar por MQTT si hay broker
-  if ((eNow == ABRIENDO || eNow == CERRANDO) && (now - tMoveSince) >= CURRENT_BLANKING_MS && (now - tLastIcheck) >= CURRENT_CHECK_PERIOD_MS) {
+  if ((eNow == ABRIENDO || eNow == CERRANDO) &&
+      (now - tMoveSince) >= CURRENT_BLANKING_MS &&
+      (now - tLastIcheck) >= CURRENT_CHECK_PERIOD_MS) {
     if (current_guard_stop_if_over()) {
       overIEvent = true;  // marcaremos evento para publicar si hay MQTT
       Serial.println("[I] Corte por sobrecorriente");
@@ -236,16 +334,16 @@ void net_tick() {
   // 2) CONECTIVIDAD (solo si hay WiFi/MQTT)
   // =====================================
 
-  // WiFi reconexión con backoff
+  // WiFi reconexión con backoff (no bloqueante)
   if (WiFi.status() != WL_CONNECTED) {
     if (now >= tNextRetry) {
       logPrint(".");
       WiFi.reconnect();
-      retryDelayMs = (retryDelayMs < RETRY_DELAY_MAX) ? retryDelayMs * 2 : RETRY_DELAY_MAX;
+      retryDelayMs = (retryDelayMs < RETRY_DELAY_MAX) ? (retryDelayMs * 2) : RETRY_DELAY_MAX;
       tNextRetry = now + retryDelayMs;
     }
     ipShown = false;
-    return;  // sin WiFi, no seguimos con MQTT/telemetría
+    return;  // sin WiFi, no seguimos con MQTT/telemetría (pero control local ya se hizo)
   }
 
   // WiFi OK
@@ -254,33 +352,51 @@ void net_tick() {
     logPrintf("\n[WiFi] Conectado: %s\n", WiFi.localIP().toString().c_str());
   }
 
-  // MQTT
-  if (!mqttEnsureConnected()) return;
-  mqtt.loop();
+  // MQTT (no bloqueante)
+  (void)mqttEnsureConnected();
+  if (mqtt.connected()) {
+    mqtt.loop(); // procesa tráfico solo si está conectado
+  }
 
   // =========================
   // 3) TELEMETRÍA MQTT (opcional)
   // =========================
 
-  // Publicar corriente cada 2s
-  static uint32_t tLastCurrent = 0;
-  if (now - tLastCurrent >= 2000) {
-    float I = current_readA();
-    net_mqtt_publish(TOPIC_IMEAS, String(I, 2), false);
-    tLastCurrent = now;
-  }
+  if (mqtt.connected()) {
+    // Publicar corriente cada 2s
+    static uint32_t tLastCurrent = 0;
+    if (now - tLastCurrent >= 2000) {
+      float I = current_readA();
+      net_mqtt_publish(TOPIC_IMEAS, String(I, 2), false);
+      tLastCurrent = now;
+    }
 
-  // Encoder cada 500 ms
-  static uint32_t tLastEnc = 0;
-  if (now - tLastEnc >= 500) {
-    long pos = hall_get_count();
-    int dir = hall_get_dir();
-    net_mqtt_publish(TOPIC_ENC_POS, String(pos), false);
-    net_mqtt_publish(TOPIC_ENC_DIR, String(dir), false);
-    tLastEnc = now;
+    // Encoder cada 500 ms
+    static uint32_t tLastEnc = 0;
+    if (now - tLastEnc >= 500) {
+      long pos = hall_get_count();
+      int dir = hall_get_dir();
+      net_mqtt_publish(TOPIC_ENC_POS, String(pos), false);
+      net_mqtt_publish(TOPIC_ENC_DIR, String(dir), false);
+      tLastEnc = now;
+    }
+
+    // Aviso si hubo corte por sobrecorriente (una sola vez por evento)
+    static bool overIEventPending = false; // reflejo local
+    // Sincroniza bandera (simple)
+    // Nota: en tu código original usabas overIEvent local a net_tick;
+    // aquí mantenemos la misma semántica:
+    // - Cuando current_guard_stop_if_over() devuelve true, marcamos overIEvent.
+    // - Lo publicamos una vez y lo limpiamos.
+    // Ya lo tienes arriba con 'overIEvent'. Lo usamos directamente:
   }
 
   // Aviso si hubo corte por sobrecorriente (una sola vez por evento)
+  static bool overIEventShadow = false;
+  // La variable real está arriba (overIEvent). Usamos una sombra para publicar una sola vez.
+  // (Podrías evitar la sombra si publicas justo cuando se detecta, pero mantenemos estructura.)
+  // Como 'overIEvent' está dentro de este scope en tu original, lo dejamos tal cual:
+  // -> Mantenemos el bloque original:
   if (overIEvent) {
     net_mqtt_publish(TOPIC_LOG, String("[I] Corte por sobrecorriente"), false);
     overIEvent = false;

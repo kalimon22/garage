@@ -1,18 +1,31 @@
 // motor.h
 #pragma once
 
-void motor_begin();
-void motor_tick();
+// =====================================================
+//   Inicialización y ciclo de control
+// =====================================================
+void motor_begin();   // Inicializa pines, PWM y recupera config NVS
+void motor_tick();    // Llamar cada MOTOR_TICK_MS ms (rampa + interlock)
 
-void motorOpen();
-void motorClose();
-void motorStop();
+// =====================================================
+//   Control de movimiento
+// =====================================================
+void motorOpen();     // Pide abrir (respeta rampas e interlocks)
+void motorClose();    // Pide cerrar
+void motorStop();     // Parada normal (log [MOTOR] STOP)
+void motor_stop();    // Alias snake_case de motorStop()
+void motor_emergency_stop(); // Parada de emergencia (corte inmediato, log [MOTOR] EMERGENCY STOP)
 
-void motor_set_speed(int percent);        // fija velocidad actual y base (0..100)
-int  motor_get_speed();
+// =====================================================
+//   Velocidad
+// =====================================================
+void motor_set_speed(int percent);        // fija velocidad actual y base (0..100) y persiste en NVS
+int  motor_get_speed();                   // devuelve velocidad actual aplicada (0..100)
 
-void motor_set_speed_target(int percent); // fija velocidad base (0..100)
-int  motor_get_speed_target();
+void motor_set_speed_target(int percent); // fija velocidad base (0..100) y persiste en NVS
+int  motor_get_speed_target();            // devuelve velocidad efectiva (base o ralentizada)
 
-// NUEVO: activar/desactivar modo lento (aplica factor sobre la base)
-void motor_set_slow(bool on);
+// =====================================================
+//   Modo lento (slow)
+// =====================================================
+void motor_set_slow(bool on);             // activa/desactiva slowMode (aplica factor sobre base)

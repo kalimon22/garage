@@ -7,6 +7,8 @@
 #include "motor.h"
 #include "current.h"
 #include "hall.h"
+#include "light.h"
+#include "safety.h"
 
 static unsigned long tUltimoCambio = 0;
 
@@ -71,7 +73,9 @@ void setup() {
   net_begin();
   motor_begin();     // <- importante
   display_begin();
-  current_begin();  
+  current_begin(); 
+  light_begin(); 
+  safety_begin();
   setEstado(DETENIDO);
   renderEstado(getEstado());
   pinMode(BUTTON_PIN, (BUTTON_ACTIVE_LVL == LOW) ? INPUT_PULLUP : INPUT);
@@ -97,6 +101,8 @@ void loop() {
 
     // Botón local siempre
   handleButton(ahora);
+  light_tick(ahora);
+  safety_tick(ahora); 
 
 
   // Hall (aplica o no según flag)

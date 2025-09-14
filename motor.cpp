@@ -3,6 +3,7 @@
 #include "motor.h"
 #include "config.h"
 #include "state.h"
+#include "logx.h"   // <-- para logPrintf
 
 // -----------------------
 // Persistencia (NVS)
@@ -69,7 +70,7 @@ static void refresh_effective_target() {
 }
 
 // -----------------------
-// API pública
+// API pública (modo lento / velocidades)
 // -----------------------
 void motor_set_slow(bool on) {
   slowMode = on;
@@ -123,7 +124,7 @@ void motor_begin() {
   digitalWrite(MOTOR_REN_PIN, HIGH); // habilita driver lado R
   digitalWrite(MOTOR_LEN_PIN, HIGH); // habilita driver lado L
 
-  // Configura PWM en ambos canales (API de tu proyecto para ESP32)
+  // Configura PWM en ambos canales (API core 3.x ESP32)
   ledcAttach(MOTOR_RPWM_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
   ledcAttach(MOTOR_LPWM_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
 
@@ -139,6 +140,8 @@ void motor_begin() {
 // -----------------------
 void motorOpen()  { desiredDir = DIR_OPEN;  }
 void motorClose() { desiredDir = DIR_CLOSE; }
+
+// Parada normal (llamada “camelCase” ya existente)
 void motorStop()  {
   desiredDir = DIR_NONE;
   // Aplicamos parada inmediata y arrancamos dead-time
@@ -147,6 +150,27 @@ void motorStop()  {
     actualDir  = DIR_NONE;
     tDirChange = millis();
   }
+  logPrintln("[MOTOR] STOP");
+}
+
+// Alias en snake_case para compatibilidad con otros módulos
+void motor_stop() {
+  motorStop();
+}
+
+// Parada de emergencia: corta salidas YA, limpia estados y deja rampa a 0
+void motor_emergency_stop() {
+  desiredDir   = DIR_NONE;   // nadie desea mover
+  actualDir    = DIR_NONE;   // reflejo inmediato
+  applyStopOutputs();        // PWM a 0 en ambos canales
+
+  // Si quisieras “corte duro” del puente H, descomenta:
+  // digitalWrite(MOTOR_REN_PIN, LOW);
+  // digitalWrite(MOTOR_LEN_PIN, LOW);
+
+  tDirChange   = millis();   // arranca dead-time para un próximo arranque
+  speedPercent = 0;          // la rampa parte de 0 tras emergencia
+  logPrintln("[MOTOR] EMERGENCY STOP");
 }
 
 // -----------------------
