@@ -1,8 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
-// Inicialización (si necesitas resetear estados)
+// Inicialización (resetea estados internos de seguridad)
 void safety_begin();
 
-// Llamar periódicamente desde loop()
+// Tick periódico (llamar en loop principal con millis())
 void safety_tick(uint32_t now);

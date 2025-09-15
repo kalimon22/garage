@@ -130,6 +130,7 @@
 #define LIGHT_PWM_RES_BITS        10
 #define LIGHT_DEFAULT_LEVEL       1023    // para 10 bits, 1023 = max
 #define LIGHT_AUTO_OFF_MS         (2UL * 60UL * 1000UL)  // 2 minutos
+#define LIGHT_AUTO_OFF_MS         15000  // 15 s para tus pruebas
 
 // ---------------- MQTT - LUCES ----------------
 #define TOPIC_LIGHT_CMD           "garage/light/cmd"           // "ON" / "OFF" / "TOGGLE"
@@ -144,8 +145,18 @@
 // =====================================================
 //                 SALVAGUARDAS (PLAUSIBILIDAD)
 // =====================================================
-#define SAFETY_MIN_CURRENT_A              0.15f   // por debajo de esto consideramos "corriente ~0"
-#define SAFETY_ZERO_CURRENT_TIMEOUT_MS    800     // tiempo tolerado con corriente ~0 estando en movimiento
-#define SAFETY_NO_ENCODER_TIMEOUT_MS      700     // tiempo tolerado sin pulsos Hall con corriente presente
-#define SAFETY_MIN_PULSES_DELTA           2       // pulsos mínimos esperados entre checks
-#define SAFETY_CHECK_PERIOD_MS            50      // periodo entre checks (ms)
+
+// Por debajo de este valor consideramos "corriente ~0"
+#define SAFETY_MIN_CURRENT_A              0.15f   
+
+// Tiempo tolerado con corriente ~0 estando en movimiento (ms)
+#define SAFETY_ZERO_CURRENT_TIMEOUT_MS    800     
+
+// Tiempo máximo permitido sin pulsos Hall suficientes estando con corriente (ms)
+#define SAFETY_NO_ENCODER_TIMEOUT_MS      2000    
+
+// Pulsos mínimos acumulados que deben aparecer dentro de la ventana anterior
+#define SAFETY_MIN_PULSES_TOTAL           2       
+
+// Periodo mínimo entre comprobaciones (ms)
+#define SAFETY_CHECK_PERIOD_MS            50      

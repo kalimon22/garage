@@ -1,85 +1,93 @@
 #include <Arduino.h>
 #include <math.h>
+#include <Preferences.h>
 #include "config.h"
 #include "light.h"
 #include "state.h"
 #include "logx.h"
 
-// Este archivo usa la API nueva (core ESP32 3.x):
-//   - ledcAttach(pin, freq, res);
-//   - ledcWrite(pin, duty);
-// Si compilas con core 2.x, usa la versión anterior con ledcSetup/ledcAttachPin/ledcWrite(canal).
+// =============== Config interna de efectos ===============
+static const uint32_t RESP_UPDATE_MS   = 30;    // refresco respiración
+static const uint32_t RESP_PERIOD_MS   = 2000;  // periodo respiración (ms)
+static const float    BREATH_MIN       = 0.20f; // no baja a negro (20%)
+static const float    BREATH_MAX       = 1.00f;
 
-// =========================
-// Estado interno de la luz
-// =========================
-static bool s_on = false;
-static uint16_t s_level_full = LIGHT_DEFAULT_LEVEL;   // nivel "usuario" (reposo)
-static uint32_t s_tAutoOffStart = 0;
+static const uint16_t FADE_STEP        = 20;    // decremento por paso (ajusta velocidad)
+static const uint32_t FADE_STEP_MS     = 30;    // periodo de pasos de fade
+
+// =============== Estado interno ===============
+static bool         s_on = false;                 // estado lógico
+static uint16_t     s_user_max = LIGHT_DEFAULT_LEVEL; // brillo guardado (persistente) 0..(2^RES-1)
+static uint32_t     s_autoOffStart = 0;           // se arma al terminar movimiento
+static bool         s_fading = false;             // hay fade en curso (auto-off o OFF manual)
+static uint32_t     s_lastFadeStep = 0;           // control de cadencia del fade
+static uint16_t     s_fadeLevel = 0;              // nivel actual durante fade (ambas tiras igual)
+
+static bool         s_breath_user = false;        // respiración solicitada por MQTT en reposo
+static float        s_breath_phase = 0.0f;        // 0..1
+static uint32_t     s_lastRespUpdate = 0;
 static EstadoPuerta s_prevEstado = DETENIDO;
 
-// Control de usuario por MQTT (en reposo): cualquier comando marca override
-static bool s_user_override = false;
+static Preferences  s_prefs;                      // NVS para el brillo guardado
 
-// Respiración solicitada por el usuario en reposo (respira con s_level_full)
-static bool s_breath_user_mode = false;
-
-// Helpers PWM
+// =============== Helpers PWM ===============
 static inline uint16_t levelMax() { return (1U << LIGHT_PWM_RES_BITS) - 1U; }
 static inline uint16_t clampLevel(uint32_t v) {
   uint16_t m = levelMax();
   return (v > m) ? m : (uint16_t)v;
 }
-
-// Ajusta el duty si el hardware es activo-bajo
 static inline uint16_t applyActive(uint16_t raw) {
   return (LIGHT_ACTIVE_LVL == HIGH) ? raw : (uint16_t)(levelMax() - raw);
 }
-
 static void writePWMToPin(uint8_t pin, uint16_t raw) {
 #if LIGHT_PWM_ENABLED
-  uint16_t duty = applyActive(raw);
-  ledcWrite(pin, duty); // core 3.x: write por pin
+  ledcWrite(pin, applyActive(raw)); // core 3.x: write por pin
 #else
+  // sin PWM: binario
   digitalWrite(pin, (s_on ? LIGHT_ACTIVE_LVL : (LIGHT_ACTIVE_LVL == HIGH ? LOW : HIGH)));
 #endif
 }
 
-// ===============================
-// Parámetros y estado respiración
-// ===============================
-static constexpr uint16_t LIGHT_LEVEL_MOVIMIENTO = (uint16_t)((uint32_t)LIGHT_DEFAULT_LEVEL * 40U / 100U); // 40% en movimiento
-static bool s_resp_creasing = true;
-static uint8_t s_resp_val = 0; // 0..100
-static const uint8_t s_resp_step = 5;
-static uint32_t s_last_resp_update = 0;
+// =============== Respiración ===============
+static inline float breathFactor(float phase01) {
+  float s = sinf(phase01 * 2.0f * (float)M_PI); // -1..+1
+  float x = (s + 1.0f) * 0.5f;                  // 0..1
+  return BREATH_MIN + (BREATH_MAX - BREATH_MIN) * x;
+}
 
-// ====================
-// Aplicación de salida
-// ====================
+// =============== Salida ===============
 static void applyOutput() {
 #if LIGHT_PWM_ENABLED
   uint16_t level1 = 0, level2 = 0;
 
   if (!s_on) {
     level1 = level2 = 0;
+  } else if (s_fading) {
+    // Fade manda: mismas dos tiras
+    level1 = level2 = clampLevel(s_fadeLevel);
   } else {
+    // Construye intensidades según estado de la puerta
     EstadoPuerta e = getEstado();
+    const uint16_t baseRest   = s_user_max;                             // 100% guardado
+    const uint16_t baseMoving = (uint16_t)((uint32_t)s_user_max * 40U / 100U); // 40% guardado
+
     if (e == ABRIENDO || e == CERRANDO) {
-      // En movimiento: respiración al 40% (alternada entre tiras)
-      uint8_t v = s_resp_val;
-      level1 = (uint16_t)((uint32_t)LIGHT_LEVEL_MOVIMIENTO * v / 100U);
-      level2 = (uint16_t)((uint32_t)LIGHT_LEVEL_MOVIMIENTO * (100U - v) / 100U);
+      // Respiración alternada en movimiento (suave, no llega a negro)
+      float ph = s_breath_phase;
+      float f1 = breathFactor(ph);
+      float f2 = breathFactor(fmodf(ph + 0.5f, 1.0f)); // 180° de desfase
+      level1 = clampLevel((uint32_t)(baseMoving * f1));
+      level2 = clampLevel((uint32_t)(baseMoving * f2));
     } else {
       // Reposo
-      if (s_breath_user_mode) {
-        // Respiración con el brillo actual del usuario
-        uint8_t v = s_resp_val;
-        level1 = (uint16_t)((uint32_t)s_level_full * v / 100U);
-        level2 = (uint16_t)((uint32_t)s_level_full * (100U - v) / 100U);
+      if (s_breath_user) {
+        float ph = s_breath_phase;
+        float f1 = breathFactor(ph);
+        float f2 = breathFactor(fmodf(ph + 0.5f, 1.0f));
+        level1 = clampLevel((uint32_t)(baseRest * f1));
+        level2 = clampLevel((uint32_t)(baseRest * f2));
       } else {
-        // Fijo
-        level1 = level2 = s_level_full;
+        level1 = level2 = baseRest;
       }
     }
   }
@@ -90,7 +98,7 @@ static void applyOutput() {
   #endif
 
 #else
-  // Sin PWM, binario: simple on/off
+  // Modo binario sin PWM
   if (s_on) {
     digitalWrite(LIGHT_PIN, LIGHT_ACTIVE_LVL);
     #ifdef LIGHT_PIN2
@@ -105,13 +113,17 @@ static void applyOutput() {
 #endif
 }
 
-// =====================
-// API pública de "light"
-// =====================
+// =============== Persistencia ===============
+static void persist_user_max(uint16_t lvl) {
+  s_prefs.begin("light", false);       // false -> RW (guardar)
+  s_prefs.putUShort("max", lvl);
+  s_prefs.end();
+}
+
+// =============== API pública ===============
 void light_begin() {
 #if LIGHT_PWM_ENABLED
-  // API nueva: unifica setup+attach por pin
-  ledcAttach(LIGHT_PIN, LIGHT_PWM_FREQ_HZ, LIGHT_PWM_RES_BITS);
+  ledcAttach(LIGHT_PIN,  LIGHT_PWM_FREQ_HZ, LIGHT_PWM_RES_BITS);
   #ifdef LIGHT_PIN2
   ledcAttach(LIGHT_PIN2, LIGHT_PWM_FREQ_HZ, LIGHT_PWM_RES_BITS);
   #endif
@@ -121,143 +133,141 @@ void light_begin() {
   pinMode(LIGHT_PIN2, OUTPUT);
   #endif
 #endif
+
+  // Cargar brillo guardado (si no hay, usa por defecto)
+  s_prefs.begin("light", true);        // true -> RO (leer)
+  uint16_t stored = s_prefs.getUShort("max", clampLevel(LIGHT_DEFAULT_LEVEL));
+  s_prefs.end();
+  s_user_max = clampLevel(stored);
+
   s_on = false;
-  s_user_override = false;
-  s_breath_user_mode = false;
-  s_level_full = clampLevel(LIGHT_DEFAULT_LEVEL);
-  s_prevEstado = getEstado(); // por si el arranque no es DETENIDO
+  s_fading = false;
+  s_fadeLevel = 0;
+  s_autoOffStart = 0;
+  s_breath_user = false;
+  s_breath_phase = 0.0f;
+  s_lastRespUpdate = 0;
+  s_prevEstado = getEstado();
+
   applyOutput();
 }
 
-// Apagado suave disminuyendo nivel
-static void fadeOutStep() {
-  if (s_level_full > 0) {
-    s_level_full = (s_level_full > 20) ? (uint16_t)(s_level_full - 20) : 0;
-    applyOutput();
-  }
-  if (s_level_full == 0) {
-    s_on = false;
-  }
-}
-
-void light_on()  {
+void light_on() {
+  // Cancela fades y enciende a 100% del guardado (en reposo)
+  s_fading = false;
   s_on = true;
+  s_fadeLevel = s_user_max; // por consistencia
+  s_autoOffStart = 0;       // encendido manual no arma auto-off
   applyOutput();
 }
 
 void light_off() {
-  // Apagado suave manual: se inicia fade-out desde el nivel actual
-  s_tAutoOffStart = 0;   // cancelar auto-off programado
-  s_user_override = true;
-  s_on = true;           // asegurar que está encendido para hacer fade
-  // El fade real lo ejecuta light_tick cuando toque el timer,
-  // pero si quieres cortar ya, puedes llamar a fadeOutStep() en bucle desde fuera.
+  // Iniciar fade manual desde el nivel guardado
+  s_on = true;          // para poder hacer fade
+  s_fading = true;
+  s_fadeLevel = s_user_max;
+  s_lastFadeStep = millis();
+  s_autoOffStart = 0;   // cortar auto-off en curso (esto es un OFF manual)
+  applyOutput();
 }
 
 void light_toggle() {
-  if (s_on) {
-    light_off();
-  } else {
-    s_user_override = true;
-    s_on = true;
+  if (s_on && !s_fading) light_off();
+  else                   light_on();
+}
+
+bool light_is_on() { return s_on; }
+
+void light_set_level(uint16_t level) {
+  // Este nivel es el "máximo guardado" (persistente)
+  s_user_max = clampLevel(level);
+  persist_user_max(s_user_max);
+
+  // Si está encendida y en reposo (no fading), actualiza salida
+  if (s_on && !s_fading && (getEstado() == DETENIDO)) {
     applyOutput();
   }
 }
 
-bool light_is_on() {
-  return s_on;
-}
-
-void light_set_level(uint16_t level) {
-  s_level_full = clampLevel(level);
-  s_user_override = true;
-  if (s_on) applyOutput();
-}
-
 uint16_t light_get_level() {
-  return s_level_full;
+  return s_user_max;
 }
 
 void light_set_percent(uint8_t pct) {
   if (pct > 100) pct = 100;
   uint32_t raw = (uint32_t)pct * levelMax() / 100U;
-  light_set_level((uint16_t)raw);
+  light_set_level((uint16_t)raw); // persiste
 }
 
 void light_set_breath_mode(bool enable) {
-  s_breath_user_mode = enable; // sólo aplica en reposo
-  s_user_override = true;
-  s_on = (s_on || enable);  // si activan respiración, enciende si estaba apagado
+  s_breath_user = enable;
+  if (enable && !s_on) {
+    // activar respiración en reposo implica encender a 100% del guardado
+    s_on = true;
+    s_fading = false;
+  }
   applyOutput();
 }
 
-bool light_get_breath_mode() {
-  return s_breath_user_mode;
-}
+bool light_get_breath_mode() { return s_breath_user; }
 
-// ===========================================
-// Lógica automática: movimiento / reposo / fade
-// ===========================================
+// =============== TICK: animaciones, auto-off, transiciones ===============
 void light_tick(uint32_t now) {
   EstadoPuerta e = getEstado();
 
-  // Cambios de estado de la puerta
+  // Respiración (solo si ON y no hay fade)
+  if (s_on && !s_fading && (now - s_lastRespUpdate >= RESP_UPDATE_MS)) {
+    s_lastRespUpdate = now;
+    float d = (float)RESP_UPDATE_MS / (float)RESP_PERIOD_MS; // 0..1 por ciclo
+    s_breath_phase += d;
+    if (s_breath_phase >= 1.0f) s_breath_phase -= 1.0f;
+    applyOutput();
+  }
+
+  // Fade (manual OFF o auto-off)
+  if (s_fading && (now - s_lastFadeStep >= FADE_STEP_MS)) {
+    s_lastFadeStep = now;
+    if (s_fadeLevel > 0) {
+      s_fadeLevel = (s_fadeLevel > FADE_STEP) ? (uint16_t)(s_fadeLevel - FADE_STEP) : 0;
+      applyOutput();
+    }
+    if (s_fadeLevel == 0) {
+      s_on = false;
+      s_fading = false;
+      s_autoOffStart = 0; // por si vino de auto-off
+      applyOutput();
+    }
+  }
+
+  // Cambio de estado de puerta
   if (e != s_prevEstado) {
     if (e == ABRIENDO || e == CERRANDO) {
-      // Al empezar a moverse: control automático
+      // Entramos en movimiento: ON, respirar al 40%, sin auto-off ni fade activos
       s_on = true;
-      s_user_override = false;     // desactiva override de usuario durante movimiento
-      s_breath_user_mode = false;  // respiración "usuario" no aplica en movimiento
-      s_tAutoOffStart = 0;         // sin auto-off durante el movimiento
-      s_resp_val = 0;              // reinicia respiración
-      s_resp_creasing = true;
+      s_fading = false;
+      s_autoOffStart = 0;
+      s_breath_user = false;  // en movimiento solo respiración automática
       applyOutput();
     } else {
-      // Al detenerse: 100% fijo y arrancar auto-off
-      s_breath_user_mode = false;
+      // Se detuvo: ON al 100% guardado y armar auto-off
       s_on = true;
-      s_level_full = clampLevel(levelMax()); // 100% fijo
+      s_fading = false;
+      s_fadeLevel = s_user_max;
       applyOutput();
-      s_tAutoOffStart = now;                 // cuenta atrás (p.ej. 2 min)
-      // s_user_override sigue en false hasta que llegue MQTT
+      s_autoOffStart = now;   // aquí arranca el contador (p.ej. 15 s o 15 min)
     }
     s_prevEstado = e;
   }
 
-  // Actualiza efecto respiración
-  if (s_on) {
-    bool doResp = false;
-    if (e == ABRIENDO || e == CERRANDO) {
-      doResp = true; // respiración al 40%
-    } else if (s_breath_user_mode) {
-      doResp = true; // respiración con s_level_full en reposo
-    }
-
-    if (doResp && (now - s_last_resp_update > 80U)) {
-      s_last_resp_update = now;
-      if (s_resp_creasing) {
-        uint8_t nv = (uint8_t)(s_resp_val + s_resp_step);
-        s_resp_val = (nv >= 100) ? 100 : nv;
-        if (s_resp_val >= 100) s_resp_creasing = false;
-      } else {
-        if (s_resp_val > s_resp_step) s_resp_val -= s_resp_step;
-        else s_resp_val = 0;
-        if (s_resp_val == 0) s_resp_creasing = true;
-      }
+  // Auto-off solo cuando estamos en reposo, ON, sin fade manual
+  if (s_autoOffStart && !s_fading && s_on && (e == DETENIDO)) {
+    if (now - s_autoOffStart >= LIGHT_AUTO_OFF_MS) {
+      // Disparar fade de auto-off
+      s_fading = true;
+      s_fadeLevel = s_user_max;  // arranca desde el 100% guardado
+      s_lastFadeStep = now;
+      s_autoOffStart = 0;        // desarma el contador; fade se encarga de apagar
       applyOutput();
-    }
-  }
-
-  // Auto-apagado (sólo en reposo, sin override de usuario)
-  if (s_tAutoOffStart && (e != ABRIENDO && e != CERRANDO) && !s_user_override) {
-    if (now - s_tAutoOffStart >= LIGHT_AUTO_OFF_MS) {
-      // Fade-out gradual: una muesca por "tick"
-      fadeOutStep();
-      s_tAutoOffStart = now;
-      if (!s_on) {
-        // apagado completo: detener timer
-        s_tAutoOffStart = 0;
-      }
     }
   }
 }
