@@ -22,7 +22,7 @@
 #define MOTOR_REN_PIN            32
 #define MOTOR_LEN_PIN            33
 
-#define MOTOR_PWM_FREQ           1000     // Hz
+#define MOTOR_PWM_FREQ           10000     // Hz
 #define MOTOR_PWM_RES            8        // bits (0..255)
 #define MOTOR_DUTY_DEFAULT       255      // duty por defecto
 
@@ -130,7 +130,6 @@
 #define LIGHT_PWM_RES_BITS        10
 #define LIGHT_DEFAULT_LEVEL       1023    // para 10 bits, 1023 = max
 #define LIGHT_AUTO_OFF_MS         (2UL * 60UL * 1000UL)  // 2 minutos
-#define LIGHT_AUTO_OFF_MS         15000  // 15 s para tus pruebas
 
 // ---------------- MQTT - LUCES ----------------
 #define TOPIC_LIGHT_CMD           "garage/light/cmd"           // "ON" / "OFF" / "TOGGLE"
