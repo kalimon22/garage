@@ -2,6 +2,7 @@
 #include <Preferences.h>
 #include "current.h"
 #include "state.h"
+#include "motor.h"
 
 const int PIN_ACS = 34;
 
@@ -13,7 +14,9 @@ const float DIVIDER_GAIN = 1.5;
 const float SENS_V_PER_A = 0.100; 
 
 // Límite por defecto si no hay nada guardado
-static float LIMIT_A = 8.0;  
+static float LIMIT_A = 8.0;
+static uint8_t overCount = 0;     // cuántas veces seguidas superó el límite
+static const uint8_t REQUIRED_OVER = 20;  // cuántas lecturas consecutivas  
 
 static float vZero = 0.0;
 static Preferences prefs;   // instancia de NVS
@@ -56,14 +59,37 @@ float current_readA() {
 }
 
 bool current_guard_stop_if_over() {
+  static uint8_t overCount = 0;  // 👈 asegurate de que sea estática
   float Ia = current_readA();
-  if (Ia > LIMIT_A) {
-    setEstado(DETENIDO);  // setEstado se encarga de parar motor y publicar
-    Serial.printf("¡CORTE por sobrecorriente! I=%.2f A (límite=%.2f)\n", Ia, LIMIT_A);
-    return true;
+  float limit = LIMIT_A;
+
+  if (motor_isSlowMode()) {
+    limit *= 0.8;  // reduce el límite en modo lento (ajustable)
   }
+
+  if (Ia > limit) {
+    overCount++;
+    if (overCount >= REQUIRED_OVER) {
+      EstadoPuerta eNow = getEstado();  // 👈 saber si estaba cerrando o abriendo
+
+      if (eNow == CERRANDO) {
+        setEstado(OBSTACULO);   // 👈 activar el estado de retroceso
+        Serial.printf("¡CORTE al cerrar! I=%.2f A (lim=%.2f)\n", Ia, limit);
+      } else {
+        setEstado(DETENIDO);    // 👈 solo parar si estaba abriendo
+        Serial.printf("¡CORTE al abrir! I=%.2f A (lim=%.2f)\n", Ia, limit);
+      }
+
+      overCount = 0;
+      return true;
+    }
+  } else {
+    overCount = 0;
+  }
+
   return false;
 }
+
 
 // --- Nuevo: guardar límite en NVS cuando cambia ---
 void current_set_limit(float amps) {

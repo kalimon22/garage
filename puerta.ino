@@ -51,16 +51,6 @@ void handleButton(unsigned long ahora) {
               lastDir = +1;
             }
             break;
-
-          case ABIERTO:                   // si estás abierto y pulsas: cierra
-            setEstado(CERRANDO);
-            lastDir = -1;
-            break;
-
-          case CERRADO:                   // si estás cerrado y pulsas: abre
-            setEstado(ABRIENDO);
-            lastDir = +1;
-            break;
         }
         logPrintf("[BTN] Press -> nuevo estado: %d (lastDir=%d)\n", (int)getEstado(), lastDir);
       }

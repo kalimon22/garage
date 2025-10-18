@@ -69,6 +69,10 @@ static void refresh_effective_target() {
   speedTarget = clamp01_100(eff);
 }
 
+bool motor_isSlowMode() {
+  return slowMode;
+}
+
 // -----------------------
 // API pública (modo lento / velocidades)
 // -----------------------
@@ -177,6 +181,53 @@ void motor_emergency_stop() {
 // Rampa + interlock (llamar cada MOTOR_TICK_MS ms)
 // -----------------------
 void motor_tick() {
+  static uint32_t tObstaculo = 0;
+  static bool retroStarted = false;
+  const uint32_t now = millis();
+
+  // --- NUEVO BLOQUE: manejo del estado OBSTÁCULO ---
+  if (getEstado() == OBSTACULO) {
+    if (tObstaculo == 0) {
+      // Primer tick en estado OBSTÁCULO → parar el motor
+      applyStopOutputs();
+      actualDir = DIR_NONE;
+      desiredDir = DIR_NONE;
+      tDirChange = now;
+      tObstaculo = now;
+      retroStarted = false;
+      Serial.println("[OBSTACULO] Motor detenido por sobrecorriente");
+      return; // salimos del tick normal
+    }
+
+    // Espera breve antes de invertir sentido
+    if (!retroStarted && (now - tObstaculo) > 200) {
+      motor_set_slow(true);          // opcional: retroceso lento
+      applyOpenOutputs(speedTarget); // abrir un poco
+      actualDir = DIR_OPEN;
+      desiredDir = DIR_OPEN;
+      retroStarted = true;
+      Serial.println("[OBSTACULO] Retroceso iniciado");
+      return; // seguimos retrocediendo en próximos ticks
+    }
+
+    // Después de ~1000 ms de retroceso, detener
+    if (retroStarted && (now - tObstaculo) > 2000) {
+      applyStopOutputs();
+      actualDir = DIR_NONE;
+      desiredDir = DIR_NONE;
+      tDirChange = now;
+      tObstaculo = 0;
+      retroStarted = false;
+      motor_set_slow(false);         // volver a velocidad normal
+      setEstado(DETENIDO);
+      Serial.println("[OBSTACULO] Retroceso completado, motor detenido");
+      return;
+    }
+
+    // Mientras esté en OBSTÁCULO, no se ejecuta nada más
+    return;
+  }
+  // --- FIN BLOQUE NUEVO -
   // 1) Sincroniza "desiredDir" con el estado global, por si alguien llamó setEstado()
   switch (getEstado()) {
     case ABRIENDO:  desiredDir = DIR_OPEN;  break;
@@ -194,7 +245,6 @@ void motor_tick() {
   }
 
   // 3) Interlock de inversión: para > espera dead-time > aplica nuevo sentido
-  const uint32_t now = millis();
 
   if (desiredDir != actualDir) {
     if (actualDir != DIR_NONE) {

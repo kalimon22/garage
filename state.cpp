@@ -8,10 +8,9 @@ static EstadoPuerta estadoActual = DETENIDO;
 static const char* estadoToText(EstadoPuerta e) {
   switch (e) {
     case ABRIENDO: return "ABRIENDO";
-    case ABIERTO:  return "ABIERTO";
     case CERRANDO: return "CERRANDO";
-    case CERRADO:  return "CERRADO";
     case DETENIDO: return "DETENIDO";
+    case OBSTACULO: return "OBSTACULO";
   }
   return "?";
 }
@@ -31,12 +30,6 @@ void setEstado(EstadoPuerta e) {
       motorClose(); 
       break;
     case DETENIDO:
-      motorStop(); 
-      break;
-    case ABIERTO:
-      motorStop(); 
-      break;
-    case CERRADO: 
       motorStop(); 
       break;
   }

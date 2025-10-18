@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-enum EstadoPuerta : uint8_t { ABRIENDO, ABIERTO, CERRANDO, CERRADO, DETENIDO };
+enum EstadoPuerta : uint8_t { ABRIENDO, CERRANDO,  DETENIDO, OBSTACULO };
 
 void display_begin();
 void renderEstado(EstadoPuerta e);

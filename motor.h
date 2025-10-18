@@ -29,3 +29,4 @@ int  motor_get_speed_target();            // devuelve velocidad efectiva (base o
 //   Modo lento (slow)
 // =====================================================
 void motor_set_slow(bool on);             // activa/desactiva slowMode (aplica factor sobre base)
+bool motor_isSlowMode();

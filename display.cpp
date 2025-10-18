@@ -40,10 +40,9 @@ static const char* estadoToText(EstadoPuerta e)
 {
   switch (e) {
     case ABRIENDO: return "ABRIENDO";
-    case ABIERTO:  return "ABIERTO";
     case CERRANDO: return "CERRANDO";
-    case CERRADO:  return "CERRADO";
     case DETENIDO: return "DETENIDO";
+    case OBSTACULO: return "!";
   }
   return "?";
 }

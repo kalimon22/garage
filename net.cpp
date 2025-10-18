@@ -380,25 +380,9 @@ void net_tick() {
       net_mqtt_publish(TOPIC_ENC_DIR, String(dir), false);
       tLastEnc = now;
     }
-
-    // Aviso si hubo corte por sobrecorriente (una sola vez por evento)
-    static bool overIEventPending = false; // reflejo local
-    // Sincroniza bandera (simple)
-    // Nota: en tu código original usabas overIEvent local a net_tick;
-    // aquí mantenemos la misma semántica:
-    // - Cuando current_guard_stop_if_over() devuelve true, marcamos overIEvent.
-    // - Lo publicamos una vez y lo limpiamos.
-    // Ya lo tienes arriba con 'overIEvent'. Lo usamos directamente:
-  }
-
-  // Aviso si hubo corte por sobrecorriente (una sola vez por evento)
-  static bool overIEventShadow = false;
-  // La variable real está arriba (overIEvent). Usamos una sombra para publicar una sola vez.
-  // (Podrías evitar la sombra si publicas justo cuando se detecta, pero mantenemos estructura.)
-  // Como 'overIEvent' está dentro de este scope en tu original, lo dejamos tal cual:
-  // -> Mantenemos el bloque original:
-  if (overIEvent) {
-    net_mqtt_publish(TOPIC_LOG, String("[I] Corte por sobrecorriente"), false);
-    overIEvent = false;
+    if (overIEvent) {
+      net_mqtt_publish(TOPIC_LOG, String("[I] Corte por sobrecorriente"), false);
+      overIEvent = false;
+    }
   }
 }
