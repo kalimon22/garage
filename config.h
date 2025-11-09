@@ -27,7 +27,7 @@
 #define MOTOR_DUTY_DEFAULT       255      // duty por defecto
 
 // ---------------- Rampa del motor ----------------
-#define MOTOR_RAMP_STEP_PERCENT  5        // cambia 5% por tick
+#define MOTOR_RAMP_STEP_PERCENT  1        // cambia 1% por tick
 #define MOTOR_TICK_MS            20       // llama motor_tick() cada 20 ms
 
 // Tiempo muerto (dead-time) al invertir sentido para proteger el puente H
