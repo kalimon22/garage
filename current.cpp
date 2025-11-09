@@ -21,6 +21,23 @@ static const uint8_t REQUIRED_OVER = 20;  // cuántas lecturas consecutivas
 static float vZero = 0.0;
 static Preferences prefs;   // instancia de NVS
 
+static unsigned long lastRecalMs = 0;
+static const unsigned long RECAL_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL;  // 6 horas
+static const unsigned long MIN_IDLE_FOR_RECAL_MS = 60UL * 1000UL;           // 1 minuto detenido
+
+static void calibrate_offset() {
+  const int N = 200;
+  uint32_t acc = 0;
+  for (int i = 0; i < N; ++i) {
+    acc += analogRead(PIN_ACS);
+    delay(2);
+  }
+  float adcMean = acc / float(N);
+  float vAdc = (adcMean / ADC_MAX) * VREF;
+  vZero = vAdc * DIVIDER_GAIN;
+  Serial.printf("[CURRENT] Offset vZero=%.3f V\n", vZero);
+}
+
 void current_begin() {
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
@@ -34,16 +51,8 @@ void current_begin() {
   delay(50);
 
   // Calibrar offset con motor parado
-  const int N = 200;
-  uint32_t acc = 0;
-  for (int i = 0; i < N; ++i) {
-    acc += analogRead(PIN_ACS);
-    delay(2);
-  }
-  float adcMean = acc / float(N);
-  float vAdc = (adcMean / ADC_MAX) * VREF;
-  vZero = vAdc * DIVIDER_GAIN;
-  Serial.printf("[CURRENT] Offset vZero=%.3f V\n", vZero);
+  calibrate_offset();
+  lastRecalMs = millis();
 }
 
 float current_readA() {
@@ -99,3 +108,28 @@ void current_set_limit(float amps) {
 }
 
 float current_get_limit() { return LIMIT_A; }
+
+void current_tick(unsigned long ahoraMs) {
+  static bool estabaDetenido = false;
+  static unsigned long detenidoDesde = 0;
+
+  bool estaDetenido = (getEstado() == DETENIDO);
+
+  if (!estaDetenido) {
+    estabaDetenido = false;
+    return;
+  }
+
+  if (!estabaDetenido) {
+    estabaDetenido = true;
+    detenidoDesde = ahoraMs;
+  }
+
+  if ((ahoraMs - lastRecalMs) < RECAL_INTERVAL_MS)
+    return;
+  if ((ahoraMs - detenidoDesde) < MIN_IDLE_FOR_RECAL_MS)
+    return;
+
+  calibrate_offset();
+  lastRecalMs = ahoraMs;
+}

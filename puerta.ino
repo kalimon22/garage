@@ -91,6 +91,7 @@ void loop() {
 
     // Botón local siempre
   handleButton(ahora);
+  current_tick(ahora);
   light_tick(ahora);
   safety_tick(ahora); 
 

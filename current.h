@@ -15,3 +15,6 @@ void current_set_limit(float amps);
 
 // Lectura del límite actual
 float current_get_limit();
+
+// Recalibración periódica cuando el motor está detenido
+void current_tick(unsigned long ahoraMs);
