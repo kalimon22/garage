@@ -176,7 +176,12 @@ void light_toggle() {
   else                   light_on();
 }
 
-bool light_is_on() { return s_on; }
+bool light_is_on() { 
+  // Si está apagada lógicamente O si está haciendo el fade de apagado, devolvemos false
+  if (!s_on || s_fading) return false; 
+  return true; 
+}
+
 
 void light_set_level(uint16_t level) {
   // Este nivel es el "máximo guardado" (persistente)

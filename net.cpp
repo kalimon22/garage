@@ -31,6 +31,7 @@ static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
 
 static bool mqttEnsureConnected();
+static bool lastLightOn = light_is_on();
 
 
 // =====================================================
@@ -395,6 +396,12 @@ void net_tick() {
       float I = current_readA();
       net_mqtt_publish(TOPIC_IMEAS, String(I, 2), false);
       tLastCurrent = now;
+    }
+
+    bool isOn = light_is_on();
+    if (isOn != lastLightOn) {
+      net_mqtt_publish(TOPIC_LIGHT_STATE, isOn ? "ON" : "OFF", true);
+      lastLightOn = isOn;
     }
 
     // Encoder cada 500ms
