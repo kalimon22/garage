@@ -27,6 +27,9 @@ enum LastEndstop : uint8_t { END_UNKNOWN=0, END_CLOSED=1, END_OPEN=2 };
 
 // ISR para el pin de PULSOS
 IRAM_ATTR static void isr_pulse() {
+  EstadoPuerta e = getEstado();
+  if (e != ABRIENDO && e != CERRANDO && e != OBSTACULO) return;
+
   int dirLevel = digitalRead(HALL_DIR_PIN);
 #if HALL_DIR_ACTIVE_HIGH_CLOSE
   encDir = (dirLevel ? -1 : +1);
@@ -86,18 +89,20 @@ void hall_tick(unsigned long now) {
   long c = hall_get_count();
   const long total = hall_open_pulses;
   const long slowThreshPulses = (total * HALL_SLOWDOWN_THRESHOLD_PERCENT) / 100;
+  const long softThreshPulses = (total * HALL_SOFTSTOP_THRESHOLD_PERCENT) / 100;
 
-  auto nearEitherEnd = [&](long pos){
+  auto nearEitherEnd = [&](long pos, long thresh){
     long distToClosed = pos;
     long distToOpen   = total - pos;
     long dmin = (distToClosed < distToOpen) ? distToClosed : distToOpen;
-    return dmin <= slowThreshPulses;
+    return dmin <= thresh;
   };
 
   switch (getEstado()) {
     case ABRIENDO: {
-      bool inSlow = nearEitherEnd(c);
-      motor_set_slow(inSlow);
+      if (nearEitherEnd(c, softThreshPulses)) motor_set_slow(2);      // Ultra-lento (5%)
+      else if (nearEitherEnd(c, slowThreshPulses)) motor_set_slow(1); // Lento (20%)
+      else motor_set_slow(0);                                        // Normal
 
       if (c >= total) {
         tryStop("[HALL] tope de ABIERTO");
@@ -105,17 +110,34 @@ void hall_tick(unsigned long now) {
     } break;
 
     case CERRANDO: {
-      bool inSlow = nearEitherEnd(c);
-      motor_set_slow(inSlow);
+      if (nearEitherEnd(c, softThreshPulses)) motor_set_slow(2);      // Ultra-lento (5%)
+      else if (nearEitherEnd(c, slowThreshPulses)) motor_set_slow(1); // Lento (20%)
+      else motor_set_slow(0);                                        // Normal
 
       if (c <= 0) {
         tryStop("[HALL] tope de CERRADO");
         hall_mark_closed();
       }
     } break;
+    
+    case OBSTACULO:
+      // Durante retroceso por obstáculo, mantenemos el modo que pida motor.cpp (generalmente lento)
+      break;
 
     default:
-      motor_set_slow(false);
+      motor_set_slow(0);
       break;
   }
+}
+
+bool hall_is_near_closed() {
+  const long total = hall_open_pulses;
+  const long thresh = (total * HALL_SYNC_THRESHOLD_PERCENT) / 100;
+  return hall_get_count() <= thresh;
+}
+
+bool hall_is_near_open() {
+  const long total = hall_open_pulses;
+  const long thresh = (total * HALL_SYNC_THRESHOLD_PERCENT) / 100;
+  return hall_get_count() >= (total - thresh);
 }

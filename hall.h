@@ -49,3 +49,7 @@ extern long hall_open_pulses;
 void hall_set_enabled(bool on);
 bool hall_is_enabled();
 
+// Comprueba si estamos cerca de los extremos (para auto-calibración)
+bool hall_is_near_closed();
+bool hall_is_near_open();
+

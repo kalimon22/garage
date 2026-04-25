@@ -26,7 +26,8 @@ void motor_set_speed_target(int percent); // fija velocidad base (0..100) y pers
 int  motor_get_speed_target();            // devuelve velocidad efectiva (base o ralentizada)
 
 // =====================================================
-//   Modo lento (slow)
+//   Modo lento (slow / ultra-slow)
 // =====================================================
-void motor_set_slow(bool on);             // activa/desactiva slowMode (aplica factor sobre base)
+void motor_set_slow(int level);           // 0=normal, 1=lento, 2=ultra-lento
+void motor_set_slow(bool on);             // alias: true=nivel 1, false=nivel 0
 bool motor_isSlowMode();

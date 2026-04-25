@@ -3,6 +3,7 @@
 #include "current.h"
 #include "state.h"
 #include "motor.h"
+#include "hall.h"
 
 const int PIN_ACS = 34;
 
@@ -82,11 +83,23 @@ bool current_guard_stop_if_over() {
       EstadoPuerta eNow = getEstado();  // 👈 saber si estaba cerrando o abriendo
 
       if (eNow == CERRANDO) {
-        setEstado(OBSTACULO);   // 👈 activar el estado de retroceso
-        Serial.printf("¡CORTE al cerrar! I=%.2f A (lim=%.2f)\n", Ia, limit);
+        if (hall_is_near_closed()) {
+          setEstado(DETENIDO);
+          hall_mark_closed();
+          Serial.printf("¡Tope físico detectado al cerrar! Resincronizando a 0. I=%.2f A\n", Ia);
+        } else {
+          setEstado(OBSTACULO);   // retroceder si no estamos cerca del final
+          Serial.printf("¡OBSTÁCULO al cerrar! I=%.2f A (lim=%.2f)\n", Ia, limit);
+        }
       } else {
-        setEstado(DETENIDO);    // 👈 solo parar si estaba abriendo
-        Serial.printf("¡CORTE al abrir! I=%.2f A (lim=%.2f)\n", Ia, limit);
+        if (hall_is_near_open()) {
+          setEstado(DETENIDO);
+          hall_mark_open();
+          Serial.printf("¡Tope físico detectado al abrir! Resincronizando final. I=%.2f A\n", Ia);
+        } else {
+          setEstado(DETENIDO);    // simplemente parar si estaba abriendo lejos del final
+          Serial.printf("¡CORTE al abrir! I=%.2f A (lim=%.2f)\n", Ia, limit);
+        }
       }
 
       overCount = 0;

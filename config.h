@@ -30,12 +30,25 @@
 #define MOTOR_RAMP_STEP_PERCENT  1        // cambia 1% por tick
 #define MOTOR_TICK_MS            20       // llama motor_tick() cada 20 ms
 
+// ---------------- Arranque suave (pre-tensado de cadena) ----------------
+// Durante los primeros MOTOR_SOFTSTART_MS el motor no superará MOTOR_SOFTSTART_MAX_PERCENT.
+// Esto evita el "tirón" inicial cuando la cadena está algo destensada.
+// Ajusta MOTOR_SOFTSTART_MAX_PERCENT si el arranque sigue siendo brusco (bájalo)
+// o si el motor no arranca (súbelo). Ajusta MOTOR_SOFTSTART_MS si necesitas más
+// tiempo de pre-tensado.
+#define MOTOR_SOFTSTART_MS            1000    // ms de arranque suave
+#define MOTOR_SOFTSTART_MAX_PERCENT   15   // velocidad máxima durante ese periodo (%)
+#define MOTOR_START_PEDESTAL_PERCENT  15   // potencia mínima inicial para vencer fricción
+
 // Tiempo muerto (dead-time) al invertir sentido para proteger el puente H
 #define MOTOR_REVERSE_DEADTIME_MS 80      // ms (60–120 ms recomendado)
 
+// Tiempo de retroceso cuando se detecta un obstáculo
+#define MOTOR_OBSTACLE_RETREAT_MS 3500    // ms de retroceso para liberar el obstáculo
+
 // ---------------- Comprobación de sobrecorriente ----------------
 #define CURRENT_CHECK_PERIOD_MS  20       // periodo de chequeo (ms)
-#define CURRENT_BLANKING_MS      300      // ignora durante 300 ms desde que empieza a moverse
+#define CURRENT_BLANKING_MS      600      // ignora durante 600 ms desde que empieza a moverse
 
 // =====================================================
 //                 SENSOR HALL (ENCODER)
@@ -65,6 +78,12 @@
 
 // Tiempo mínimo entre paradas consecutivas por Hall (antirebote, en ms)
 #define HALL_STOP_DEBOUNCE_MS     80
+
+// % del recorrido final que se considera "zona de tope" para auto-calibración por sobrecorriente
+#define HALL_SYNC_THRESHOLD_PERCENT 10
+
+// % del recorrido final para el "aterrizaje" ultra lento (igual que el arranque)
+#define HALL_SOFTSTOP_THRESHOLD_PERCENT 5
 
 // Hall ON/OFF por defecto (puede sobreescribirse en arranque)
 #define HALL_ENABLED_DEFAULT      1      // 0 = OFF (útil para comisionado), 1 = ON
@@ -149,7 +168,7 @@
 #define SAFETY_MIN_CURRENT_A              0.15f   
 
 // Tiempo tolerado con corriente ~0 estando en movimiento (ms)
-#define SAFETY_ZERO_CURRENT_TIMEOUT_MS    800     
+#define SAFETY_ZERO_CURRENT_TIMEOUT_MS    3000     
 
 // Tiempo máximo permitido sin pulsos Hall suficientes estando con corriente (ms)
 #define SAFETY_NO_ENCODER_TIMEOUT_MS      2000    

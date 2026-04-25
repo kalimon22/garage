@@ -18,7 +18,7 @@ static const char* KEY_VEL_BASE = "velBase";  // 0..100
 static int  speedPercent = 0;   // velocidad actual aplicada (0..100)
 static int  speedTarget  = 0;   // objetivo efectivo (0..100) tras aplicar modo lento
 static int  baseTarget   = 0;   // objetivo base (0..100) antes de factor de ralentización
-static bool slowMode     = false; // si true, se aplica el factor de ralentización al target
+static int  slowLevel    = 0;     // 0=normal, 1=lento(50%), 2=ultra-lento(15%)
 
 // FSM de sentido con interlock (dead-time)
 enum Dir : uint8_t { DIR_NONE=0, DIR_OPEN=1, DIR_CLOSE=2 };
@@ -59,26 +59,34 @@ static void applyCloseOutputs(int percent) {
   ledcWrite(MOTOR_LPWM_PIN, calcDuty(percent));
 }
 
-// Recalcula el objetivo efectivo (speedTarget) a partir de baseTarget y slowMode
+// Recalcula el objetivo efectivo (speedTarget) a partir de baseTarget y slowLevel
 static void refresh_effective_target() {
   int eff = baseTarget;
-  if (slowMode) {
-    // velocidad efectiva = base * (MOTOR_SLOWDOWN_FACTOR_PERCENT / 100)
+  if (slowLevel == 1) {
+    // Nivel 1: ralentización normal (usamos el factor de config)
     eff = (eff * MOTOR_SLOWDOWN_FACTOR_PERCENT) / 100;
+  } else if (slowLevel == 2) {
+    // Nivel 2: ultra-lento para "aterrizaje" (usamos el mismo que arranque suave)
+    eff = MOTOR_SOFTSTART_MAX_PERCENT;
   }
   speedTarget = clamp01_100(eff);
 }
 
 bool motor_isSlowMode() {
-  return slowMode;
+  return (slowLevel > 0);
 }
 
 // -----------------------
 // API pública (modo lento / velocidades)
 // -----------------------
-void motor_set_slow(bool on) {
-  slowMode = on;
+void motor_set_slow(int level) {
+  slowLevel = level;
   refresh_effective_target(); // ajusta speedTarget en función del modo
+}
+
+// Alias para compatibilidad con código anterior que pasaba bool
+void motor_set_slow(bool on) {
+  motor_set_slow(on ? 1 : 0);
 }
 
 // ¡IMPORTANTE! Ya NO escribimos PWM directo aquí; solo actualizamos estado.
@@ -108,7 +116,7 @@ void motor_set_speed_target(int percent) {
 }
 
 int motor_get_speed_target() {
-  return speedTarget; // (en boot slowMode=false, equivale a base)
+  return speedTarget; 
 }
 
 // -----------------------
@@ -119,8 +127,8 @@ void motor_begin() {
   prefsMotor.begin(NVS_NS_MOTOR, false);
   baseTarget   = clamp01_100((int)prefsMotor.getInt(KEY_VEL_BASE, 0));
   speedTarget  = baseTarget;
-  speedPercent = baseTarget;   // opcional: igualamos al objetivo al arrancar
-  slowMode     = false;
+  speedPercent = 0;   // siempre arrancar desde 0 para que el soft-start actúe
+  slowLevel    = 0;
   refresh_effective_target();
 
   pinMode(MOTOR_REN_PIN, OUTPUT);
@@ -147,7 +155,8 @@ void motorClose() { desiredDir = DIR_CLOSE; }
 
 // Parada normal (llamada “camelCase” ya existente)
 void motorStop()  {
-  desiredDir = DIR_NONE;
+  desiredDir   = DIR_NONE;
+  speedPercent = 0;   // resetear para que el próximo arranque empiece desde 0
   // Aplicamos parada inmediata y arrancamos dead-time
   if (actualDir != DIR_NONE) {
     applyStopOutputs();
@@ -178,109 +187,106 @@ void motor_emergency_stop() {
 }
 
 // -----------------------
+// Ayudante: Lógica de retroceso por obstáculo
+// -----------------------
+static void handle_obstaculo_logic(uint32_t now) {
+  static uint32_t tObstaculo = 0;
+  static bool     retroStarted = false;
+
+  if (tObstaculo == 0) {
+    applyStopOutputs();
+    actualDir = DIR_NONE;
+    tDirChange = now;
+    tObstaculo = now;
+    retroStarted = false;
+    Serial.println("[OBSTACULO] Motor detenido");
+    return;
+  }
+
+  // Espera 200ms antes de invertir sentido
+  if (!retroStarted && (now - tObstaculo) > 200) {
+    motor_set_slow(2);             // Retroceso ultra-lento (15%) para seguridad
+    applyOpenOutputs(speedTarget); // Liberar obstáculo
+    actualDir = DIR_OPEN;
+    retroStarted = true;
+    Serial.println("[OBSTACULO] Retroceso de seguridad...");
+  }
+
+  // Detener tras el tiempo configurado de retroceso y volver a reposo
+  if (retroStarted && (now - tObstaculo) > MOTOR_OBSTACLE_RETREAT_MS) {
+    applyStopOutputs();
+    actualDir = DIR_NONE;
+    tObstaculo = 0;
+    retroStarted = false;
+    motor_set_slow(0);
+    setEstado(DETENIDO);
+    Serial.println("[OBSTACULO] Maniobra completada");
+  }
+}
+
+// -----------------------
 // Rampa + interlock (llamar cada MOTOR_TICK_MS ms)
 // -----------------------
 void motor_tick() {
-  static uint32_t tObstaculo = 0;
-  static bool retroStarted = false;
   const uint32_t now = millis();
+  static uint32_t tMoveStart = 0;
 
-  // --- NUEVO BLOQUE: manejo del estado OBSTÁCULO ---
+  // 1. GESTIÓN DE OBSTÁCULOS
   if (getEstado() == OBSTACULO) {
-    if (tObstaculo == 0) {
-      // Primer tick en estado OBSTÁCULO → parar el motor
-      applyStopOutputs();
-      actualDir = DIR_NONE;
-      desiredDir = DIR_NONE;
-      tDirChange = now;
-      tObstaculo = now;
-      retroStarted = false;
-      Serial.println("[OBSTACULO] Motor detenido por sobrecorriente");
-      return; // salimos del tick normal
-    }
-
-    // Espera breve antes de invertir sentido
-    if (!retroStarted && (now - tObstaculo) > 200) {
-      motor_set_slow(true);          // opcional: retroceso lento
-      applyOpenOutputs(speedTarget); // abrir un poco
-      actualDir = DIR_OPEN;
-      desiredDir = DIR_OPEN;
-      retroStarted = true;
-      Serial.println("[OBSTACULO] Retroceso iniciado");
-      return; // seguimos retrocediendo en próximos ticks
-    }
-
-    // Después de ~1000 ms de retroceso, detener
-    if (retroStarted && (now - tObstaculo) > 2000) {
-      applyStopOutputs();
-      actualDir = DIR_NONE;
-      desiredDir = DIR_NONE;
-      tDirChange = now;
-      tObstaculo = 0;
-      retroStarted = false;
-      motor_set_slow(false);         // volver a velocidad normal
-      setEstado(DETENIDO);
-      Serial.println("[OBSTACULO] Retroceso completado, motor detenido");
-      return;
-    }
-
-    // Mientras esté en OBSTÁCULO, no se ejecuta nada más
-    return;
-  }
-  // --- FIN BLOQUE NUEVO -
-  // 1) Sincroniza "desiredDir" con el estado global, por si alguien llamó setEstado()
-  switch (getEstado()) {
-    case ABRIENDO:  desiredDir = DIR_OPEN;  break;
-    case CERRANDO:  desiredDir = DIR_CLOSE; break;
-    default:        desiredDir = DIR_NONE;  break;
-  }
-
-  // 2) Rampa hacia el objetivo efectivo
-  if (speedPercent != speedTarget) {
-    if (speedPercent < speedTarget) {
-      speedPercent = min(speedPercent + MOTOR_RAMP_STEP_PERCENT, speedTarget);
-    } else {
-      speedPercent = max(speedPercent - MOTOR_RAMP_STEP_PERCENT, speedTarget);
-    }
-  }
-
-  // 3) Interlock de inversión: para > espera dead-time > aplica nuevo sentido
-
-  if (desiredDir != actualDir) {
-    if (actualDir != DIR_NONE) {
-      // Estábamos aplicando un sentido: soltar primero
-      applyStopOutputs();
-      actualDir  = DIR_NONE;
-      tDirChange = now;
-      return; // damos una vuelta de tick en stop antes de seguir
-    }
-
-    // Aquí estamos en DIR_NONE; esperamos dead-time antes de enganchar el nuevo
-    if ((now - tDirChange) < MOTOR_REVERSE_DEADTIME_MS) {
-      applyStopOutputs();
-      return;
-    }
-
-    // Ya pasó el dead-time: engancha nuevo sentido
-    if (desiredDir == DIR_OPEN) {
-      applyOpenOutputs(speedPercent);
-      actualDir = DIR_OPEN;
-    } else if (desiredDir == DIR_CLOSE) {
-      applyCloseOutputs(speedPercent);
-      actualDir = DIR_CLOSE;
-    } else {
-      applyStopOutputs();
-      actualDir = DIR_NONE;
-    }
+    handle_obstaculo_logic(now);
     return;
   }
 
-  // 4) Mantener salidas según sentido actual
-  if (actualDir == DIR_OPEN) {
-    applyOpenOutputs(speedPercent);
-  } else if (actualDir == DIR_CLOSE) {
-    applyCloseOutputs(speedPercent);
-  } else {
+  // 2. SINCRONIZACIÓN DE DIRECCIÓN
+  // Traducimos el estado global a una intención local (Abrir, Cerrar o Quieto)
+  Dir targetDir = DIR_NONE;
+  EstadoPuerta e = getEstado();
+  if (e == ABRIENDO)      targetDir = DIR_OPEN;
+  else if (e == CERRANDO) targetDir = DIR_CLOSE;
+
+  // 3. SEGURIDAD: TIEMPO MUERTO (DEAD-TIME)
+  // Si cambiamos de sentido, forzamos parada y esperamos el tiempo muerto (protege el puente H)
+  if (targetDir != actualDir) {
     applyStopOutputs();
+    if (actualDir != DIR_NONE) {
+      tDirChange = now;
+      actualDir = DIR_NONE;
+      speedPercent = 0; 
+    }
+
+    // Solo arrancamos si ha pasado el tiempo de seguridad (80ms recomendado)
+    if (actualDir == DIR_NONE && targetDir != DIR_NONE) {
+      if (now - tDirChange >= MOTOR_REVERSE_DEADTIME_MS) {
+        actualDir = targetDir;
+        tMoveStart = now;
+        speedPercent = MOTOR_START_PEDESTAL_PERCENT; // El motor nace con un mínimo de fuerza
+        logPrintf("[MOTOR] Arrancando %s (Kick %d%%)\n", 
+                  (actualDir == DIR_OPEN ? "OPEN" : "CLOSE"), MOTOR_START_PEDESTAL_PERCENT);
+      }
+    }
+  }
+
+  // 4. CONTROL DE VELOCIDAD (RAMPA Y LÍMITES)
+  if (actualDir != DIR_NONE) {
+    // Objetivo según sensores (Normal, 50% o 15% para el aterrizaje final)
+    int target = speedTarget;
+
+    // Filtro de arranque: primer segundo limitado por MOTOR_SOFTSTART_MAX_PERCENT
+    if (now - tMoveStart < MOTOR_SOFTSTART_MS) {
+      target = min(target, (int)MOTOR_SOFTSTART_MAX_PERCENT);
+    }
+
+    // Rampa: Aplicamos el cambio progresivo (subir/bajar 1% cada 20ms)
+    if (speedPercent < target)      speedPercent = min(speedPercent + MOTOR_RAMP_STEP_PERCENT, target);
+    else if (speedPercent > target) speedPercent = max(speedPercent - MOTOR_RAMP_STEP_PERCENT, target);
+
+    // 5. SALIDA FÍSICA A LOS PINES
+    if (actualDir == DIR_OPEN) applyOpenOutputs(speedPercent);
+    else                       applyCloseOutputs(speedPercent);
+  } 
+  else {
+    // Si la orden es estar detenidos, aseguramos parada total y reset de rampa
+    applyStopOutputs();
+    speedPercent = 0;
   }
 }

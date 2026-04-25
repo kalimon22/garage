@@ -76,16 +76,23 @@ void safety_tick(uint32_t now) {
   float I  = current_readA();
   long enc = hall_get_count();
 
+  static uint32_t tMoveStarted = 0;
+  if (moving && tMoveStarted == 0) tMoveStarted = now;
+  if (!moving) tMoveStarted = 0;
+
   // (1) Movimiento declarado pero corriente ~0 durante demasiado tiempo
+  // Ignoramos esta comprobación durante los primeros CURRENT_BLANKING_MS para evitar falsos positivos en el arranque suave
   if (I <= SAFETY_MIN_CURRENT_A) {
-    if (tZeroISince == 0) tZeroISince = now;
-    if (now - tZeroISince >= SAFETY_ZERO_CURRENT_TIMEOUT_MS) {
-      safety_emergency_stop("Motor moviendo pero corriente ~0 (posible cable suelto/driver abierto).");
-      tZeroISince   = 0;
-      tNoEncSince   = 0;
-      accumEncDelta = 0;
-      lastEnc       = enc;
-      return;
+    if (tMoveStarted != 0 && (now - tMoveStarted) > CURRENT_BLANKING_MS) {
+      if (tZeroISince == 0) tZeroISince = now;
+      if (now - tZeroISince >= SAFETY_ZERO_CURRENT_TIMEOUT_MS) {
+        safety_emergency_stop("Motor moviendo pero corriente ~0 (posible cable suelto/driver abierto).");
+        tZeroISince   = 0;
+        tNoEncSince   = 0;
+        accumEncDelta = 0;
+        lastEnc       = enc;
+        return;
+      }
     }
   } else {
     tZeroISince = 0;
