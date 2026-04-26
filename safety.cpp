@@ -115,7 +115,28 @@ void safety_tick(uint32_t now) {
       tNoEncSince   = 0;
       accumEncDelta = 0;
     } else if (now - tNoEncSince >= SAFETY_NO_ENCODER_TIMEOUT_MS) {
-      safety_emergency_stop("Corriente presente pero sin pulsos Hall suficientes en ventana (atasco/sensor/cable).");
+      // Sin pulsos suficientes: distinguir entre atasco real y tope físico
+      EstadoPuerta eNow = getEstado();
+      bool nearEnd = (eNow == ABRIENDO  && hall_is_near_open())
+                  || (eNow == CERRANDO && hall_is_near_closed());
+
+      if (nearEnd) {
+        // El motor llegó al tope mecánico antes de alcanzar la cuenta objetivo.
+        // Parada limpia + auto-calibración de la posición.
+        motor_stop();
+        setEstado(DETENIDO);
+        if (eNow == ABRIENDO) {
+          hall_mark_open();
+          logPrintln("[SAFETY] Tope ABIERTO detectado (sin pulsos Hall). Auto-calibrado.");
+          net_mqtt_publish(TOPIC_LOG, "[SAFETY] Tope ABIERTO detectado: auto-calibrado.", false);
+        } else {
+          hall_mark_closed();
+          logPrintln("[SAFETY] Tope CERRADO detectado (sin pulsos Hall). Auto-calibrado.");
+          net_mqtt_publish(TOPIC_LOG, "[SAFETY] Tope CERRADO detectado: auto-calibrado.", false);
+        }
+      } else {
+        safety_emergency_stop("Corriente presente pero sin pulsos Hall suficientes en ventana (atasco/sensor/cable).");
+      }
       tNoEncSince   = 0;
       tZeroISince   = 0;
       accumEncDelta = 0;

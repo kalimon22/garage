@@ -171,7 +171,7 @@
 #define SAFETY_ZERO_CURRENT_TIMEOUT_MS    3000     
 
 // Tiempo máximo permitido sin pulsos Hall suficientes estando con corriente (ms)
-#define SAFETY_NO_ENCODER_TIMEOUT_MS      2000    
+#define SAFETY_NO_ENCODER_TIMEOUT_MS      5000    
 
 // Pulsos mínimos acumulados que deben aparecer dentro de la ventana anterior
 #define SAFETY_MIN_PULSES_TOTAL           2       
