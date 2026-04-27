@@ -37,8 +37,8 @@
 // o si el motor no arranca (súbelo). Ajusta MOTOR_SOFTSTART_MS si necesitas más
 // tiempo de pre-tensado.
 #define MOTOR_SOFTSTART_MS            1000    // ms de arranque suave
-#define MOTOR_SOFTSTART_MAX_PERCENT   15   // velocidad máxima durante ese periodo (%)
-#define MOTOR_START_PEDESTAL_PERCENT  15   // potencia mínima inicial para vencer fricción
+#define MOTOR_SOFTSTART_MAX_PERCENT   20   // velocidad máxima durante ese periodo (%)
+#define MOTOR_START_PEDESTAL_PERCENT  10   // potencia mínima inicial para vencer fricción
 
 // Tiempo muerto (dead-time) al invertir sentido para proteger el puente H
 #define MOTOR_REVERSE_DEADTIME_MS 80      // ms (60–120 ms recomendado)
@@ -80,7 +80,7 @@
 #define HALL_STOP_DEBOUNCE_MS     80
 
 // % del recorrido final que se considera "zona de tope" para auto-calibración por sobrecorriente
-#define HALL_SYNC_THRESHOLD_PERCENT 10
+#define HALL_SYNC_THRESHOLD_PERCENT 5
 
 // % del recorrido final para el "aterrizaje" ultra lento (igual que el arranque)
 #define HALL_SOFTSTOP_THRESHOLD_PERCENT 5

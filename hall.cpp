@@ -58,7 +58,7 @@ long hall_get_count() { return encCount; }
 int  hall_get_dir()   { return encDir; }
 
 void hall_mark_closed() {
-  encCount = 0;
+  encCount = 1;
   prefsHall.putUChar(KEY_LAST_END, END_CLOSED);
 }
 
